@@ -2,7 +2,6 @@ import { existsSync, readdirSync, statSync } from "fs";
 import { join, extname } from "path";
 import type { MuxProvider } from "../contracts/mux";
 import { MuxRegistry } from "../mux/registry";
-import { TmuxProvider } from "../mux/tmux";
 import { SERVER_PORT, SERVER_HOST } from "../shared";
 
 /**
@@ -21,10 +20,6 @@ export type PluginFactory = (api: PluginAPI) => void | Promise<void>;
 
 export class PluginLoader {
   readonly registry = new MuxRegistry();
-
-  loadBuiltins(): void {
-    this.registry.register(new TmuxProvider());
-  }
 
   registerMux(provider: MuxProvider): void {
     this.registry.register(provider);

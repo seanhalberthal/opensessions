@@ -13,15 +13,17 @@ function fakeMux(name: string): MuxProvider {
     getSessionDir: () => "",
     getPaneCount: () => 1,
     getClientTty: () => "",
+    createSession: () => {},
+    killSession: () => {},
     setupHooks: () => {},
     cleanupHooks: () => {},
   };
 }
 
 describe("PluginLoader", () => {
-  test("loadBuiltins registers TmuxProvider", () => {
+  test("registerMux registers a provider", () => {
     const loader = new PluginLoader();
-    loader.loadBuiltins();
+    loader.registerMux(fakeMux("tmux"));
     expect(loader.registry.list()).toContain("tmux");
   });
 
@@ -33,7 +35,7 @@ describe("PluginLoader", () => {
 
   test("resolve with no config uses auto-detect", () => {
     const loader = new PluginLoader();
-    loader.loadBuiltins();
+    loader.registerMux(fakeMux("tmux"));
     const mux = loader.resolve();
     if (process.env.TMUX) {
       expect(mux?.name).toBe("tmux");
@@ -44,7 +46,7 @@ describe("PluginLoader", () => {
 
   test("resolve with explicit mux override", () => {
     const loader = new PluginLoader();
-    loader.loadBuiltins();
+    loader.registerMux(fakeMux("tmux"));
     loader.registerMux(fakeMux("zellij"));
     const mux = loader.resolve("zellij");
     expect(mux?.name).toBe("zellij");
@@ -52,7 +54,7 @@ describe("PluginLoader", () => {
 
   test("resolve returns null for unregistered override", () => {
     const loader = new PluginLoader();
-    loader.loadBuiltins();
+    loader.registerMux(fakeMux("tmux"));
     expect(loader.resolve("screen")).toBeNull();
   });
 
@@ -64,7 +66,7 @@ describe("PluginLoader", () => {
 
   test("getSetupInfo returns structured setup information", () => {
     const loader = new PluginLoader();
-    loader.loadBuiltins();
+    loader.registerMux(fakeMux("tmux"));
     const info = loader.getSetupInfo();
     expect(info.registeredMuxProviders).toContain("tmux");
     expect(typeof info.configPath).toBe("string");
@@ -94,6 +96,8 @@ describe("PluginLoader — factory loading from directory", () => {
           getSessionDir: () => "",
           getPaneCount: () => 1,
           getClientTty: () => "",
+          createSession: () => {},
+          killSession: () => {},
           setupHooks: () => {},
           cleanupHooks: () => {},
         });
@@ -120,6 +124,8 @@ describe("PluginLoader — factory loading from directory", () => {
           getSessionDir: () => "",
           getPaneCount: () => 1,
           getClientTty: () => "",
+          createSession: () => {},
+          killSession: () => {},
           setupHooks: () => {},
           cleanupHooks: () => {},
         });

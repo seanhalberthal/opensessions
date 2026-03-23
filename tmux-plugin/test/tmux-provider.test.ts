@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
-import { TmuxProvider } from "../src/mux/tmux";
-import type { MuxProvider, MuxSessionInfo } from "../src/contracts/mux";
+import { TmuxProvider } from "../src/provider";
+import type { MuxProvider } from "@opensessions/core";
 
 describe("TmuxProvider", () => {
   test("implements MuxProvider interface", () => {
@@ -12,6 +12,8 @@ describe("TmuxProvider", () => {
     expect(typeof provider.getSessionDir).toBe("function");
     expect(typeof provider.getPaneCount).toBe("function");
     expect(typeof provider.getClientTty).toBe("function");
+    expect(typeof provider.createSession).toBe("function");
+    expect(typeof provider.killSession).toBe("function");
     expect(typeof provider.setupHooks).toBe("function");
     expect(typeof provider.cleanupHooks).toBe("function");
   });
@@ -19,8 +21,6 @@ describe("TmuxProvider", () => {
   test("listSessions returns MuxSessionInfo array", () => {
     const provider = new TmuxProvider();
     const sessions = provider.listSessions();
-    // This is a real tmux call — it returns sessions if tmux is running,
-    // or an empty array if not. Either way, it should be an array.
     expect(Array.isArray(sessions)).toBe(true);
     for (const s of sessions) {
       expect(typeof s.name).toBe("string");
@@ -33,7 +33,6 @@ describe("TmuxProvider", () => {
   test("getCurrentSession returns string or null", () => {
     const provider = new TmuxProvider();
     const session = provider.getCurrentSession();
-    // null if no tmux, string if tmux is running
     expect(session === null || typeof session === "string").toBe(true);
   });
 
@@ -45,7 +44,6 @@ describe("TmuxProvider", () => {
 
   test("getPaneCount returns number >= 0 for any session name", () => {
     const provider = new TmuxProvider();
-    // For a nonexistent session, should return 0 or 1
     const count = provider.getPaneCount("nonexistent-session-xyz");
     expect(typeof count).toBe("number");
     expect(count).toBeGreaterThanOrEqual(0);

@@ -26,6 +26,8 @@ describe("Mux Contract", () => {
       getSessionDir: (_name: string) => "",
       getPaneCount: (_name: string) => 1,
       getClientTty: () => "",
+      createSession: (_name?: string, _dir?: string) => {},
+      killSession: (_name: string) => {},
       setupHooks: (_serverHost: string, _serverPort: number) => {},
       cleanupHooks: () => {},
     };

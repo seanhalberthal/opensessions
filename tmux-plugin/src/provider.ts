@@ -1,4 +1,4 @@
-import type { MuxProvider, MuxSessionInfo } from "../contracts/mux";
+import type { MuxProvider, MuxSessionInfo } from "@opensessions/core";
 
 function run(cmd: string[]): string {
   try {
@@ -61,6 +61,20 @@ export class TmuxProvider implements MuxProvider {
     return run(["tmux", "display-message", "-p", "#{client_tty}"]);
   }
 
+  createSession(name?: string, dir?: string): void {
+    const args = ["tmux", "new-session", "-d"];
+    if (name) args.push("-s", name);
+    if (dir) args.push("-c", dir);
+    Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe" });
+  }
+
+  killSession(name: string): void {
+    Bun.spawnSync(["tmux", "kill-session", "-t", name], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  }
+
   setupHooks(serverHost: string, serverPort: number): void {
     const focusCmd = `run-shell -b "curl -s -o /dev/null -X POST http://${serverHost}:${serverPort}/focus -d $(tmux display-message -p '#{client_session}')"`;
     const refreshCmd = `run-shell -b "curl -s -o /dev/null -X POST http://${serverHost}:${serverPort}/refresh"`;
@@ -91,7 +105,6 @@ export class TmuxProvider implements MuxProvider {
   /**
    * Batch pane count retrieval for all sessions at once.
    * Returns a map of session name → pane count.
-   * Used by the server for efficient state computation.
    */
   getAllPaneCounts(): Map<string, number> {
     const counts = new Map<string, number>();

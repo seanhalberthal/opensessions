@@ -1,28 +1,25 @@
 import type { MuxProvider } from "../contracts/mux";
-import { TmuxProvider } from "./tmux";
+import { MuxRegistry } from "./registry";
 
 /**
  * Auto-detect the terminal multiplexer from environment variables.
- * Returns the appropriate MuxProvider, or null if none detected.
+ * Uses the registry to find matching providers.
  *
  * Detection order:
- * 1. $TMUX → TmuxProvider
- * 2. $ZELLIJ_SESSION_NAME → (future ZellijProvider)
+ * 1. $TMUX → provider named "tmux"
+ * 2. $ZELLIJ_SESSION_NAME → provider named "zellij"
  *
  * Users can override by passing their own MuxProvider.
  */
-export function detectMux(): MuxProvider | null {
+export function detectMux(registry?: MuxRegistry): MuxProvider | null {
+  if (!registry) return null;
+
   if (process.env.TMUX) {
-    return new TmuxProvider();
+    return registry.get("tmux");
   }
 
   if (process.env.ZELLIJ_SESSION_NAME) {
-    // Placeholder — community can implement ZellijProvider
-    console.error(
-      "Zellij detected but no ZellijProvider available yet. " +
-      "See CONTRACTS.md for how to implement one.",
-    );
-    return null;
+    return registry.get("zellij");
   }
 
   return null;

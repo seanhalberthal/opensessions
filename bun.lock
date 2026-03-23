@@ -32,6 +32,17 @@
         "typescript": "^5",
       },
     },
+    "tmux-plugin": {
+      "name": "@opensessions/tmux",
+      "version": "0.1.0",
+      "dependencies": {
+        "@opensessions/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "^5",
+      },
+    },
   },
   "packages": {
     "@ampproject/remapping": ["@ampproject/remapping@2.3.0", "", { "dependencies": { "@jridgewell/gen-mapping": "^0.3.5", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-30iZtAPgz+LTIYoeivqYo853f02jBYSd5uGnGpkFV0M3xOt9aN73erkgYAmZU43x4VfqcnLxW9Kpg3R5LC4YYw=="],
@@ -159,6 +170,8 @@
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
     "@opensessions/core": ["@opensessions/core@workspace:packages/core"],
+
+    "@opensessions/tmux": ["@opensessions/tmux@workspace:tmux-plugin"],
 
     "@opensessions/tui": ["@opensessions/tui@workspace:packages/tui"],
 
