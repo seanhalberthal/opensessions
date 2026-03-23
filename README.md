@@ -71,25 +71,39 @@ curl -X POST http://127.0.0.1:7391/event \
 
 Ready-to-use examples for **Amp**, **Claude Code**, **OpenCode**, and **Aider** in [CONTRACTS.md](./CONTRACTS.md).
 
-## Adding a Mux Provider
+## Plugins & Extending
 
-Implement the `MuxProvider` interface from `@opensessions/core`:
+opensessions has a factory-based plugin system. Drop a `.ts` file in `~/.config/opensessions/plugins/` or publish to npm as `opensessions-mux-*`:
 
 ```typescript
-interface MuxProvider {
-  name: string;
-  listSessions(): MuxSessionInfo[];
-  switchSession(name: string, clientTty?: string): void;
-  getCurrentSession(): string | null;
-  getSessionDir(name: string): string;
-  getPaneCount(name: string): number;
-  getClientTty(): string;
-  setupHooks(serverHost: string, serverPort: number): void;
-  cleanupHooks(): void;
+// ~/.config/opensessions/plugins/my-mux.ts
+import type { PluginAPI } from "@opensessions/core";
+
+export default function (api: PluginAPI) {
+  api.registerMux({ name: "my-mux", /* ... implement MuxProvider */ });
 }
 ```
 
-See [CONTRACTS.md](./CONTRACTS.md#muxprovider-interface) for the full guide.
+npm plugins go in `~/.config/opensessions/config.json`:
+
+```json
+{
+  "plugins": ["opensessions-mux-zellij"],
+  "mux": "zellij"
+}
+```
+
+Full walkthrough: scaffold → test → publish in [PLUGINS.md](./PLUGINS.md).
+
+## Setup with Amp
+
+Copy the Amp plugin to report agent status to opensessions:
+
+```bash
+cp examples/amp-plugin.ts ~/.config/amp/plugins/opensessions.ts
+```
+
+See [PLUGINS.md](./PLUGINS.md#amp) for the full plugin source and setup for Claude Code, OpenCode, and Aider.
 
 ## Built with
 

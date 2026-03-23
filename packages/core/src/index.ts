@@ -3,7 +3,12 @@ export type { AgentStatus, AgentEvent } from "./contracts/agent";
 export { TERMINAL_STATUSES } from "./contracts/agent";
 export { AgentTracker } from "./agents/tracker";
 export { TmuxProvider } from "./mux/tmux";
+export { MuxRegistry } from "./mux/registry";
 export { detectMux } from "./mux/detect";
+export { PluginLoader } from "./plugins/loader";
+export type { PluginAPI, PluginFactory } from "./plugins/loader";
+export { loadConfig } from "./config";
+export type { OpensessionsConfig } from "./config";
 export { startServer } from "./server/index";
 export { ensureServer } from "./server/launcher";
 export {
