@@ -1,119 +1,158 @@
 import type { MuxProvider, MuxSessionInfo } from "@opensessions/core";
+import { TmuxClient } from "@opensessions/tmux-sdk";
+import { appendFileSync } from "fs";
 
-function run(cmd: string[]): string {
+const tmux = new TmuxClient();
+
+function plog(msg: string, data?: Record<string, unknown>) {
+  const ts = new Date().toISOString().slice(11, 23);
+  const extra = data ? " " + JSON.stringify(data) : "";
+  try { appendFileSync("/tmp/opensessions-debug.log", `[${ts}] [provider] ${msg}${extra}\n`); } catch {}
+}
+
+/** Direct tmux call bypassing SDK (SDK has \x1f parsing issues) */
+function rawTmux(args: string[]): string {
   try {
-    const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
-    return result.stdout.toString().trim();
-  } catch {
-    return "";
-  }
+    const r = Bun.spawnSync(["tmux", ...args], { stdout: "pipe", stderr: "pipe" });
+    return r.stdout.toString().trim();
+  } catch { return ""; }
 }
 
 export class TmuxProvider implements MuxProvider {
   readonly name = "tmux";
 
   listSessions(): MuxSessionInfo[] {
-    const raw = run([
-      "tmux", "list-sessions", "-F",
-      "#{session_name}\t#{session_created}\t#{session_windows}\t#{pane_current_path}",
-    ]);
-    if (!raw) return [];
-
-    return raw.split("\n").map((line) => {
-      const [name, created, wins, dir] = line.split("\t");
-      return {
-        name: name!,
-        createdAt: parseInt(created ?? "0", 10),
-        dir: dir ?? "",
-        windows: parseInt(wins ?? "1", 10),
-      };
-    });
+    return tmux.listSessions().map((s) => ({
+      name: s.name,
+      createdAt: s.createdAt,
+      dir: s.dir,
+      windows: s.windowCount,
+    }));
   }
 
   switchSession(name: string, clientTty?: string): void {
-    if (clientTty) {
-      Bun.spawnSync(["tmux", "switch-client", "-c", clientTty, "-t", name]);
-    } else {
-      Bun.spawnSync(["tmux", "switch-client", "-t", name]);
-    }
+    tmux.switchClient(name, clientTty ? { clientTty } : undefined);
   }
 
   getCurrentSession(): string | null {
-    const out = run(["tmux", "list-clients", "-F", "#{client_session}"]);
-    if (!out) return null;
-    const first = out.split("\n")[0]?.trim();
-    return first || null;
+    return tmux.getCurrentSession();
   }
 
   getSessionDir(name: string): string {
-    return run([
-      "tmux", "display-message", "-t", name, "-p", "#{pane_current_path}",
-    ]);
+    return tmux.getSessionDir(name);
   }
 
   getPaneCount(name: string): number {
-    const out = run(["tmux", "list-panes", "-t", name, "-F", "#{pane_id}"]);
-    if (!out) return 0;
-    return out.split("\n").filter((l) => l.trim()).length;
+    return tmux.getPaneCount(name);
   }
 
   getClientTty(): string {
-    return run(["tmux", "display-message", "-p", "#{client_tty}"]);
+    return tmux.getClientTty();
   }
 
   createSession(name?: string, dir?: string): void {
-    const args = ["tmux", "new-session", "-d"];
-    if (name) args.push("-s", name);
-    if (dir) args.push("-c", dir);
-    Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe" });
+    tmux.newSession({ name, cwd: dir });
   }
 
   killSession(name: string): void {
-    Bun.spawnSync(["tmux", "kill-session", "-t", name], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    tmux.killSession(name);
   }
 
   setupHooks(serverHost: string, serverPort: number): void {
-    const focusCmd = `run-shell -b "curl -s -o /dev/null -X POST http://${serverHost}:${serverPort}/focus -d $(tmux display-message -p '#{client_session}')"`;
-    const refreshCmd = `run-shell -b "curl -s -o /dev/null -X POST http://${serverHost}:${serverPort}/refresh"`;
+    const base = `http://${serverHost}:${serverPort}`;
+    const ctx = `$(tmux display-message -p '#{session_name}:#{window_id}')`;
+    const focusCmd = `run-shell -b "curl -s -o /dev/null -X POST ${base}/focus -d ${ctx}"`;
+    const refreshCmd = `run-shell -b "curl -s -o /dev/null -X POST ${base}/refresh"`;
+    const resizeCmd = `run-shell -b "curl -s -o /dev/null -X POST ${base}/resize-sidebars"`;
+    const ensureCmd = `run-shell -b "curl -s -o /dev/null -X POST ${base}/ensure-sidebar -d ${ctx}"`;
 
-    Bun.spawnSync(["tmux", "set-hook", "-g", "client-session-changed", focusCmd], {
-      stdout: "pipe", stderr: "pipe",
-    });
-    Bun.spawnSync(["tmux", "set-hook", "-g", "session-created", refreshCmd], {
-      stdout: "pipe", stderr: "pipe",
-    });
-    Bun.spawnSync(["tmux", "set-hook", "-g", "session-closed", refreshCmd], {
-      stdout: "pipe", stderr: "pipe",
-    });
+    // client-session-changed: update focus AND ensure sidebar in the new session's window
+    tmux.setGlobalHook("client-session-changed", `${focusCmd} ; ${ensureCmd}`);
+    tmux.setGlobalHook("session-created", refreshCmd);
+    tmux.setGlobalHook("session-closed", refreshCmd);
+    tmux.setGlobalHook("client-resized", resizeCmd);
+    tmux.setGlobalHook("after-select-window", ensureCmd);
+    tmux.setGlobalHook("after-new-window", ensureCmd);
   }
 
   cleanupHooks(): void {
-    Bun.spawnSync(["tmux", "set-hook", "-gu", "client-session-changed"], {
-      stdout: "pipe", stderr: "pipe",
-    });
-    Bun.spawnSync(["tmux", "set-hook", "-gu", "session-created"], {
-      stdout: "pipe", stderr: "pipe",
-    });
-    Bun.spawnSync(["tmux", "set-hook", "-gu", "session-closed"], {
-      stdout: "pipe", stderr: "pipe",
-    });
+    tmux.unsetGlobalHook("client-session-changed");
+    tmux.unsetGlobalHook("session-created");
+    tmux.unsetGlobalHook("session-closed");
+    tmux.unsetGlobalHook("client-resized");
+    tmux.unsetGlobalHook("after-select-window");
+    tmux.unsetGlobalHook("after-new-window");
   }
 
-  /**
-   * Batch pane count retrieval for all sessions at once.
-   * Returns a map of session name → pane count.
-   */
   getAllPaneCounts(): Map<string, number> {
-    const counts = new Map<string, number>();
-    const raw = run(["tmux", "list-panes", "-a", "-F", "#{session_name}"]);
-    if (!raw) return counts;
-    for (const name of raw.split("\n")) {
-      const n = name.trim();
-      if (n) counts.set(n, (counts.get(n) ?? 0) + 1);
+    return tmux.getAllPaneCounts();
+  }
+
+  listSidebarPanes(sessionName?: string): { paneId: string; sessionName: string; windowId: string }[] {
+    const panes = sessionName
+      ? tmux.listPanes({ scope: "session", target: sessionName })
+      : tmux.listPanes();
+
+    // Build a set of hidden "opensessions" windows (detached break-pane orphans)
+    // A window named "opensessions" with only 1 pane is a hidden/orphan sidebar
+    const hiddenWindowIds = new Set<string>();
+    const windows = tmux.listWindows();
+    for (const w of windows) {
+      if (w.name === "opensessions" && w.paneCount === 1) {
+        hiddenWindowIds.add(w.id);
+      }
     }
-    return counts;
+
+    return panes
+      .filter((p) => p.title === "opensessions" && !hiddenWindowIds.has(p.windowId))
+      .map((p) => ({ paneId: p.id, sessionName: p.sessionName, windowId: p.windowId }));
+  }
+
+  spawnSidebar(
+    sessionName: string,
+    windowId: string,
+    width: number,
+    position: "left" | "right",
+    scriptsDir: string,
+  ): string | null {
+    // Find the edge pane to split against
+    const panes = tmux.listPanes({ scope: "window", target: windowId });
+    plog("spawnSidebar", { windowId, paneCount: panes.length });
+    if (panes.length === 0) return null;
+
+    const targetPane = position === "left"
+      ? panes.reduce((a, b) => (a.left <= b.left ? a : b))
+      : panes.reduce((a, b) => (a.right >= b.right ? a : b));
+
+    // Always spawn fresh — no restore logic (kill-based toggle eliminates orphans)
+    plog("spawnSidebar: spawning new", { target: targetPane.id, width, position });
+    const newPane = tmux.splitWindow({
+      target: targetPane.id,
+      direction: "horizontal",
+      before: position === "left",
+      size: width,
+      command: `REFOCUS_WINDOW=${windowId} exec ${scriptsDir}/start.sh`,
+    });
+
+    if (!newPane) {
+      plog("spawnSidebar: splitWindow FAILED");
+      return null;
+    }
+
+    tmux.setPaneTitle(newPane.id, "opensessions");
+    tmux.selectPane(targetPane.id);
+    return newPane.id;
+  }
+
+  hideSidebar(paneId: string): void {
+    tmux.breakPane({ source: paneId, name: "opensessions" });
+  }
+
+  killSidebarPane(paneId: string): void {
+    tmux.killPane(paneId);
+  }
+
+  resizeSidebarPane(paneId: string, width: number): void {
+    tmux.resizePane(paneId, { width });
   }
 }

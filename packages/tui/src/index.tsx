@@ -15,6 +15,7 @@ import {
   BUILTIN_THEMES,
   resolveTheme,
 } from "@opensessions/core";
+import { TmuxClient } from "@opensessions/tmux-sdk";
 
 const SPINNERS = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const UNSEEN_ICON = "●";
@@ -22,14 +23,10 @@ const BOLD = TextAttributes.BOLD;
 const DIM = TextAttributes.DIM;
 
 const THEME_NAMES = Object.keys(BUILTIN_THEMES);
+const sdk = new TmuxClient();
 
 function getClientTty(): string {
-  try {
-    const result = Bun.spawnSync(["tmux", "display-message", "-p", "#{client_tty}"], {
-      stdout: "pipe", stderr: "pipe",
-    });
-    return result.stdout.toString().trim();
-  } catch { return ""; }
+  return sdk.getClientTty();
 }
 
 function App() {
@@ -59,12 +56,7 @@ function App() {
 
   function switchToSession(name: string) {
     send({ type: "mark-seen", name });
-    Bun.spawn(
-      clientTty
-        ? ["tmux", "switch-client", "-c", clientTty, "-t", name]
-        : ["tmux", "switch-client", "-t", name],
-      { stdout: "ignore", stderr: "ignore" },
-    );
+    sdk.switchClient(name, clientTty ? { clientTty } : undefined);
   }
 
   function moveLocalFocus(delta: -1 | 1) {
@@ -108,6 +100,11 @@ function App() {
     socket.onopen = () => {
       setConnected(true);
       if (clientTty) send({ type: "identify", clientTty });
+      const paneId = process.env.TMUX_PANE;
+      if (paneId) {
+        const sessName = sdk.display("#{session_name}", { target: paneId });
+        if (sessName) send({ type: "identify-pane", paneId, sessionName: sessName });
+      }
     };
 
     socket.onmessage = (event) => {
@@ -133,6 +130,63 @@ function App() {
     };
 
     onCleanup(() => socket.close());
+
+    // --- Flag-based SIGWINCH handler ---
+    // Two scenarios:
+    // 1. Client resize: server sends {type:"resize", width} → set pendingClientResize=true
+    //    On SIGWINCH → snap to server width, clear flag
+    // 2. Manual resize: SIGWINCH without pending flag → debounce 100ms, read pane width, report to server
+    const paneIdForResize = process.env.TMUX_PANE;
+    let pendingClientResize = false;
+    let snapCooldown = false;
+    let serverWidth = 26; // Updated from server messages
+    let resizeDebounce: ReturnType<typeof setTimeout> | null = null;
+
+    if (paneIdForResize) {
+      const onSigwinch = () => {
+        if (pendingClientResize) {
+          // Client resize — snap back to server width
+          pendingClientResize = false;
+          snapCooldown = true;
+          sdk.resizePane(paneIdForResize, { width: serverWidth });
+          // The resize-pane we just did will trigger another SIGWINCH — ignore it
+          setTimeout(() => { snapCooldown = false; }, 300);
+        } else if (snapCooldown) {
+          // Ignore — this SIGWINCH was caused by our own snap-back
+        } else {
+          // Possible manual resize — debounce and report
+          if (resizeDebounce) clearTimeout(resizeDebounce);
+          resizeDebounce = setTimeout(() => {
+            resizeDebounce = null;
+            const widthStr = sdk.display("#{pane_width}", { target: paneIdForResize });
+            const newWidth = parseInt(widthStr, 10);
+            if (!isNaN(newWidth) && newWidth > 0 && newWidth !== serverWidth) {
+              send({ type: "report-width", width: newWidth });
+            }
+          }, 200);
+        }
+      };
+      process.on("SIGWINCH", onSigwinch);
+      onCleanup(() => {
+        process.off("SIGWINCH", onSigwinch);
+        if (resizeDebounce) clearTimeout(resizeDebounce);
+      });
+    }
+
+    // Listen for resize and quit messages from server
+    socket.addEventListener("message", (event) => {
+      try {
+        const msg = JSON.parse(event.data as string);
+        if (msg.type === "resize" && typeof msg.width === "number") {
+          serverWidth = msg.width;
+          pendingClientResize = true;
+        } else if (msg.type === "quit") {
+          // Server told us to quit
+          if (ws) ws.close();
+          renderer.destroy();
+        }
+      } catch {}
+    });
   });
 
   const hasRunning = createMemo(() =>
@@ -186,7 +240,11 @@ function App() {
 
     switch (key.name) {
       case "q":
+        // Send quit to server — it will kill all sidebars and shut down
+        send({ type: "quit" });
+        break;
       case "escape":
+        // Escape just closes this TUI locally (doesn't quit server)
         if (ws) ws.close();
         renderer.destroy();
         break;

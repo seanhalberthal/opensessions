@@ -27,6 +27,8 @@ export type {
   SessionData,
   ServerState,
   FocusUpdate,
+  ResizeNotify,
+  QuitNotify,
   ServerMessage,
   ClientCommand,
 } from "./shared";

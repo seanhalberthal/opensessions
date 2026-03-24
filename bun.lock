@@ -10,11 +10,32 @@
         "typescript": "^5",
       },
     },
+    "integrations/zellij": {
+      "name": "@opensessions/zellij",
+      "version": "0.1.0",
+      "dependencies": {
+        "@opensessions/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "^5",
+      },
+    },
     "packages/core": {
       "name": "@opensessions/core",
       "version": "0.1.0",
       "devDependencies": {
         "@opensessions/tmux": "workspace:*",
+        "@opensessions/tmux-sdk": "workspace:*",
+        "@opensessions/zellij": "workspace:*",
+        "@types/bun": "latest",
+        "typescript": "^5",
+      },
+    },
+    "packages/tmux-sdk": {
+      "name": "@opensessions/tmux-sdk",
+      "version": "0.1.0",
+      "devDependencies": {
         "@types/bun": "latest",
         "typescript": "^5",
       },
@@ -24,6 +45,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@opensessions/core": "workspace:*",
+        "@opensessions/tmux-sdk": "workspace:*",
         "@opentui/core": "^0.1.88",
         "@opentui/solid": "^0.1.88",
         "solid-js": "^1.9.11",
@@ -38,6 +60,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@opensessions/core": "workspace:*",
+        "@opensessions/tmux-sdk": "workspace:*",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -174,7 +197,11 @@
 
     "@opensessions/tmux": ["@opensessions/tmux@workspace:tmux-plugin"],
 
+    "@opensessions/tmux-sdk": ["@opensessions/tmux-sdk@workspace:packages/tmux-sdk"],
+
     "@opensessions/tui": ["@opensessions/tui@workspace:packages/tui"],
+
+    "@opensessions/zellij": ["@opensessions/zellij@workspace:integrations/zellij"],
 
     "@opentui/core": ["@opentui/core@0.1.90", "", { "dependencies": { "bun-ffi-structs": "0.1.2", "diff": "8.0.2", "jimp": "1.6.0", "marked": "17.0.1", "yoga-layout": "3.2.1" }, "optionalDependencies": { "@dimforge/rapier2d-simd-compat": "^0.17.3", "@opentui/core-darwin-arm64": "0.1.90", "@opentui/core-darwin-x64": "0.1.90", "@opentui/core-linux-arm64": "0.1.90", "@opentui/core-linux-x64": "0.1.90", "@opentui/core-win32-arm64": "0.1.90", "@opentui/core-win32-x64": "0.1.90", "bun-webgpu": "0.1.5", "planck": "^1.4.2", "three": "0.177.0" }, "peerDependencies": { "web-tree-sitter": "0.25.10" } }, "sha512-Os2dviqWVETU3kaK36lbSvdcI93GAWhw0xb9ng/d0DWYuM9scRmAhLHiOayp61saWv/BR8OJXeuQYHvrp5rd6A=="],
 

@@ -38,4 +38,26 @@ describe("Mux Contract", () => {
     expect(mock.getPaneCount("test")).toBe(1);
     expect(mock.getClientTty()).toBe("");
   });
+
+  test("MuxProvider interface supports optional sidebar methods", () => {
+    const mock: MuxProvider = {
+      name: "test-mux",
+      listSessions: () => [],
+      switchSession: () => {},
+      getCurrentSession: () => null,
+      getSessionDir: () => "",
+      getPaneCount: () => 1,
+      getClientTty: () => "",
+      createSession: () => {},
+      killSession: () => {},
+      setupHooks: () => {},
+      cleanupHooks: () => {},
+      listSidebarPanes: () => [],
+      spawnSidebar: () => null,
+      hideSidebar: () => {},
+      killSidebarPane: () => {},
+      resizeSidebarPane: () => {},
+    };
+    expect(mock.listSidebarPanes!()).toEqual([]);
+  });
 });

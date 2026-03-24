@@ -1,15 +1,11 @@
 {
-  "name": "@opensessions/tmux",
+  "name": "@opensessions/tmux-sdk",
   "version": "0.1.0",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
     "test": "bun test"
-  },
-  "dependencies": {
-    "@opensessions/core": "workspace:*",
-    "@opensessions/tmux-sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "latest",

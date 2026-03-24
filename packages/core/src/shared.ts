@@ -37,7 +37,16 @@ export interface FocusUpdate {
   currentSession: string | null;
 }
 
-export type ServerMessage = ServerState | FocusUpdate;
+export interface ResizeNotify {
+  type: "resize";
+  width: number;
+}
+
+export interface QuitNotify {
+  type: "quit";
+}
+
+export type ServerMessage = ServerState | FocusUpdate | ResizeNotify | QuitNotify;
 
 export type ClientCommand =
   | { type: "switch-session"; name: string; clientTty?: string }
@@ -50,7 +59,10 @@ export type ClientCommand =
   | { type: "focus-session"; name: string }
   | { type: "mark-seen"; name: string }
   | { type: "set-theme"; theme: string }
-  | { type: "identify"; clientTty: string };
+  | { type: "identify"; clientTty: string }
+  | { type: "report-width"; width: number }
+  | { type: "quit" }
+  | { type: "identify-pane"; paneId: string; sessionName: string };
 
 // Catppuccin Mocha palette
 export const C = {

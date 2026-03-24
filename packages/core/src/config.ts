@@ -12,6 +12,12 @@ export interface OpensessionsConfig {
   plugins: string[];
   /** Theme: builtin name (e.g. "catppuccin-latte") or partial inline theme object */
   theme?: string | PartialTheme;
+  /** Sidebar column width (default 26) */
+  sidebarWidth?: number;
+  /** Sidebar position relative to the terminal window (default "left") */
+  sidebarPosition?: "left" | "right";
+  /** Tmux prefix key for sidebar toggle (default "s") */
+  keybinding?: string;
 }
 
 const DEFAULTS: OpensessionsConfig = {

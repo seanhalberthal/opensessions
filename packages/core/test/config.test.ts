@@ -12,6 +12,30 @@ describe("Config", () => {
     expect(config.theme).toBeUndefined();
   });
 
+  test("loadConfig reads sidebar settings", async () => {
+    const tmpDir = `/tmp/opensessions-test-${Date.now()}`;
+    const configDir = join(tmpDir, ".config", "opensessions");
+    await Bun.write(
+      join(configDir, "config.json"),
+      JSON.stringify({ sidebarWidth: 30, sidebarPosition: "right", keybinding: "b" }),
+    );
+
+    const config = loadConfig(tmpDir);
+    expect(config.sidebarWidth).toBe(30);
+    expect(config.sidebarPosition).toBe("right");
+    expect(config.keybinding).toBe("b");
+
+    const { rmSync } = require("fs");
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("loadConfig returns undefined for unset sidebar settings", () => {
+    const config = loadConfig("/tmp/nonexistent-dir-" + Date.now());
+    expect(config.sidebarWidth).toBeUndefined();
+    expect(config.sidebarPosition).toBeUndefined();
+    expect(config.keybinding).toBeUndefined();
+  });
+
   test("loadConfig reads from config file", async () => {
     const tmpDir = `/tmp/opensessions-test-${Date.now()}`;
     const configDir = join(tmpDir, ".config", "opensessions");

@@ -1,10 +1,11 @@
-import { existsSync, readFileSync, unlinkSync, writeFileSync, watch, type FSWatcher } from "fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync, appendFileSync, watch, type FSWatcher } from "fs";
 import { join } from "path";
 import type { MuxProvider } from "../contracts/mux";
 import type { AgentEvent } from "../contracts/agent";
 import { AgentTracker } from "../agents/tracker";
 import { SessionOrder } from "./session-order";
 import { loadConfig, saveConfig } from "../config";
+import { TmuxClient } from "@opensessions/tmux-sdk";
 import {
   type ServerState,
   type SessionData,
@@ -18,9 +19,20 @@ import {
   EVENTS_FILE,
 } from "../shared";
 
-// --- Shell helper ---
+// --- Debug logger ---
 
-function run(cmd: string[]): string {
+const DEBUG_LOG = "/tmp/opensessions-debug.log";
+
+function log(category: string, msg: string, data?: Record<string, unknown>) {
+  const ts = new Date().toISOString().slice(11, 23);
+  const extra = data ? " " + JSON.stringify(data) : "";
+  const line = `[${ts}] [${category}] ${msg}${extra}\n`;
+  try { appendFileSync(DEBUG_LOG, line); } catch {}
+}
+
+// --- Shell helper (for git commands only) ---
+
+function shell(cmd: string[]): string {
   try {
     const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
     return result.stdout.toString().trim();
@@ -46,7 +58,7 @@ function getGitInfo(dir: string): GitInfo {
   const cached = gitInfoCache.get(dir);
   if (cached && Date.now() - cached.ts < GIT_CACHE_TTL_MS) return cached.info;
 
-  const out = run([
+  const out = shell([
     "sh", "-c",
     `cd "${dir}" 2>/dev/null && git rev-parse --abbrev-ref HEAD --git-dir 2>/dev/null && echo "---" && git status --porcelain 2>/dev/null`,
   ]);
@@ -77,7 +89,7 @@ const gitHeadWatchers = new Map<string, FSWatcher>();
 
 function resolveGitHeadPath(dir: string): string | null {
   if (!dir) return null;
-  const gitDir = run(["git", "-C", dir, "rev-parse", "--git-dir"]);
+  const gitDir = shell(["git", "-C", dir, "rev-parse", "--git-dir"]);
   if (!gitDir) return null;
   const absGitDir = gitDir.startsWith("/") ? gitDir : join(dir, gitDir);
   const headPath = join(absGitDir, "HEAD");
@@ -142,13 +154,35 @@ function readEventsFileFallback(tracker: AgentTracker): void {
 
 // --- Server startup ---
 
-export function startServer(mux: MuxProvider): void {
+export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[]): void {
+  const allProviders = [mux, ...(extraProviders ?? [])];
   const tracker = new AgentTracker();
   const sessionOrder = new SessionOrder();
+  const sdk = new TmuxClient();
+
+  // Clear previous log on server start
+  try { writeFileSync(DEBUG_LOG, ""); } catch {}
+  log("server", "starting", { providers: allProviders.map((p) => p.name) });
 
   // Load initial theme from config
   const config = loadConfig();
   let currentTheme: string | undefined = typeof config.theme === "string" ? config.theme : undefined;
+  let sidebarWidth = config.sidebarWidth ?? 26;
+  let sidebarPosition: "left" | "right" = config.sidebarPosition ?? "left";
+  let sidebarVisible = false;
+
+  // scriptsDir is resolved from the OPENSESSIONS_DIR env var or fallback
+  const scriptsDir = (() => {
+    const envDir = process.env.OPENSESSIONS_DIR;
+    if (envDir) return join(envDir, "tmux-plugin", "scripts");
+    // Fallback: relative to this file
+    return join(import.meta.dir, "..", "..", "..", "tmux-plugin", "scripts");
+  })();
+
+  log("server", "config loaded", {
+    sidebarWidth, sidebarPosition, scriptsDir,
+    theme: currentTheme, configKeys: Object.keys(config),
+  });
 
   // Bootstrap active sessions
   const currentSession = mux.getCurrentSession();
@@ -161,35 +195,55 @@ export function startServer(mux: MuxProvider): void {
   let clientCount = 0;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   const clientTtys = new WeakMap<object, string>();
+  const sessionProviders = new Map<string, MuxProvider>();
 
   function getCurrentSession(): string | null {
-    return mux.getCurrentSession();
+    const result = mux.getCurrentSession();
+    if (!result) {
+      // Fallback: try direct tmux command (works even from background processes)
+      const out = sdk.run(["list-clients", "-F", "#{client_session}"]);
+      const first = out.stdout.split("\n")[0]?.trim() || null;
+      log("getCurrentSession", "mux returned null, fallback", { fallback: first });
+      return first;
+    }
+    log("getCurrentSession", "result", { result });
+    return result;
   }
 
   function computeState(): ServerState {
-    const muxSessions = mux.listSessions();
-    muxSessions.sort((a, b) => {
+    // Merge sessions from all providers
+    const allMuxSessions: (import("../contracts/mux").MuxSessionInfo & { provider: MuxProvider })[] = [];
+    for (const p of allProviders) {
+      for (const s of p.listSessions()) {
+        allMuxSessions.push({ ...s, provider: p });
+      }
+    }
+    allMuxSessions.sort((a, b) => {
       if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
       return a.name.localeCompare(b.name);
     });
 
     // Sync custom ordering with current session list
-    sessionOrder.sync(muxSessions.map((s) => s.name));
+    sessionOrder.sync(allMuxSessions.map((s) => s.name));
 
     // Apply custom ordering
-    const orderedNames = sessionOrder.apply(muxSessions.map((s) => s.name));
-    const sessionByName = new Map(muxSessions.map((s) => [s.name, s]));
+    const orderedNames = sessionOrder.apply(allMuxSessions.map((s) => s.name));
+    const sessionByName = new Map(allMuxSessions.map((s) => [s.name, s]));
     const orderedMuxSessions = orderedNames.map((n) => sessionByName.get(n)!);
 
-    // Batch pane counts if the provider supports it
-    let paneCountMap: Map<string, number> | null = null;
-    if ("getAllPaneCounts" in mux && typeof (mux as any).getAllPaneCounts === "function") {
-      paneCountMap = (mux as any).getAllPaneCounts();
+    // Batch pane counts per provider
+    const paneCountMaps = new Map<MuxProvider, Map<string, number>>();
+    for (const p of allProviders) {
+      if ("getAllPaneCounts" in p && typeof (p as any).getAllPaneCounts === "function") {
+        paneCountMaps.set(p, (p as any).getAllPaneCounts());
+      }
     }
 
-    const sessions: SessionData[] = orderedMuxSessions.map(({ name, createdAt, windows, dir }) => {
+    const sessions: SessionData[] = orderedMuxSessions.map(({ name, createdAt, windows, dir, provider }) => {
+      sessionProviders.set(name, provider);
       const git = getGitInfo(dir);
-      const panes = paneCountMap?.get(name) ?? mux.getPaneCount(name);
+      const providerPaneCounts = paneCountMaps.get(provider);
+      const panes = providerPaneCounts?.get(name) ?? provider.getPaneCount(name);
 
       let uptime = "";
       const diff = Math.floor(Date.now() / 1000) - createdAt;
@@ -274,6 +328,133 @@ export function startServer(mux: MuxProvider): void {
     }
   }
 
+  // --- Sidebar management ---
+
+  function getProviderWithSidebar(): MuxProvider & {
+    listSidebarPanes: NonNullable<MuxProvider["listSidebarPanes"]>;
+    spawnSidebar: NonNullable<MuxProvider["spawnSidebar"]>;
+    killSidebarPane: NonNullable<MuxProvider["killSidebarPane"]>;
+    resizeSidebarPane: NonNullable<MuxProvider["resizeSidebarPane"]>;
+  } | null {
+    for (const p of allProviders) {
+      if (p.listSidebarPanes && p.spawnSidebar && p.killSidebarPane && p.resizeSidebarPane) {
+        return p as any;
+      }
+    }
+    return null;
+  }
+
+  /** Parse "session_name:window_id" context from POST body */
+  function parseContext(body: string): { session: string; windowId: string } | null {
+    const trimmed = body.trim().replace(/^"+|"+$/g, "");
+    const colonIdx = trimmed.indexOf(":");
+    if (colonIdx < 1) return null;
+    const session = trimmed.slice(0, colonIdx);
+    const windowId = trimmed.slice(colonIdx + 1);
+    if (!session || !windowId) return null;
+    return { session, windowId };
+  }
+
+  let spawningInProgress = false;
+
+  function toggleSidebar(ctx?: { session: string; windowId: string }): void {
+    const p = getProviderWithSidebar();
+    if (!p) {
+      log("toggle", "SKIP — no provider with sidebar methods");
+      return;
+    }
+
+    if (sidebarVisible) {
+      const panes = p.listSidebarPanes();
+      log("toggle", "OFF — killing panes", { count: panes.length, panes: panes.map((x) => x.paneId) });
+      for (const pane of panes) {
+        p.killSidebarPane(pane.paneId);
+      }
+      sidebarVisible = false;
+    } else {
+      sidebarVisible = true;
+      log("toggle", "ON — spawning in current window only");
+      ensureSidebarInWindow(p, ctx);
+    }
+    log("toggle", "done", { sidebarVisible });
+  }
+
+  function ensureSidebarInWindow(p?: ReturnType<typeof getProviderWithSidebar>, ctx?: { session: string; windowId: string }): void {
+    p = p ?? getProviderWithSidebar();
+    if (!p || !sidebarVisible) {
+      log("ensure", "SKIP", { hasProvider: !!p, sidebarVisible });
+      return;
+    }
+    if (spawningInProgress) {
+      log("ensure", "SKIP — spawn already in progress (re-entrant guard)");
+      return;
+    }
+
+    // Use provided context, fall back to querying tmux (unreliable from background)
+    const curSession = ctx?.session ?? getCurrentSession();
+    if (!curSession) {
+      log("ensure", "SKIP — no current session");
+      return;
+    }
+
+    const windowId = ctx?.windowId ?? sdk.getCurrentWindowId();
+    if (!windowId) {
+      log("ensure", "SKIP — could not get window_id");
+      return;
+    }
+
+    const existingPanes = p.listSidebarPanes(curSession);
+    const hasInWindow = existingPanes.some((ep) => ep.windowId === windowId);
+    log("ensure", "checking window", {
+      curSession, windowId, existingPanes: existingPanes.length,
+      hasInWindow, paneIds: existingPanes.map((x) => `${x.paneId}@${x.windowId}`),
+    });
+
+    if (!hasInWindow) {
+      spawningInProgress = true;
+      log("ensure", "SPAWNING sidebar", { curSession, windowId, sidebarWidth, sidebarPosition, scriptsDir });
+      try {
+        const newPaneId = p.spawnSidebar(curSession, windowId, sidebarWidth, sidebarPosition, scriptsDir);
+        log("ensure", "spawn result", { newPaneId });
+      } finally {
+        spawningInProgress = false;
+      }
+    }
+  }
+
+  function quitAll(): void {
+    log("quit", "killing all sidebar panes");
+    const p = getProviderWithSidebar();
+    if (p) {
+      const panes = p.listSidebarPanes();
+      log("quit", "found panes to kill", { count: panes.length });
+      for (const pane of panes) {
+        p.killSidebarPane(pane.paneId);
+      }
+    }
+    // Also kill any hidden sidebar windows
+    const allWindows = sdk.listWindows();
+    for (const w of allWindows) {
+      if (w.name === "opensessions") {
+        sdk.killWindow(w.id);
+      }
+    }
+    // Broadcast quit to all TUI clients
+    server.publish("sidebar", JSON.stringify({ type: "quit" }));
+    sidebarVisible = false;
+    // Clean up and exit
+    cleanup();
+    process.exit(0);
+  }
+
+  // --- Sidebar resize enforcement ---
+
+  function resizeSidebars() {
+    // Only broadcast target width — each TUI handles its own pane resize via SIGWINCH
+    log("resize", "broadcasting", { sidebarWidth });
+    server.publish("sidebar", JSON.stringify({ type: "resize", width: sidebarWidth }));
+  }
+
   function handleCommand(cmd: ClientCommand, ws: any) {
     switch (cmd.type) {
       case "identify":
@@ -281,14 +462,17 @@ export function startServer(mux: MuxProvider): void {
         break;
       case "switch-session": {
         const tty = cmd.clientTty ?? clientTtys.get(ws);
-        mux.switchSession(cmd.name, tty);
+        const p = sessionProviders.get(cmd.name) ?? mux;
+        p.switchSession(cmd.name, tty);
         break;
       }
       case "switch-index": {
         if (!lastState) break;
         const idx = cmd.index - 1;
         if (idx >= 0 && idx < lastState.sessions.length) {
-          mux.switchSession(lastState.sessions[idx]!.name);
+          const name = lastState.sessions[idx]!.name;
+          const p = sessionProviders.get(name) ?? mux;
+          p.switchSession(name);
         }
         break;
       }
@@ -296,10 +480,12 @@ export function startServer(mux: MuxProvider): void {
         mux.createSession();
         broadcastState();
         break;
-      case "kill-session":
-        mux.killSession(cmd.name);
+      case "kill-session": {
+        const p = sessionProviders.get(cmd.name) ?? mux;
+        p.killSession(cmd.name);
         broadcastState();
         break;
+      }
       case "reorder-session":
         sessionOrder.reorder(cmd.name, cmd.delta);
         broadcastState();
@@ -321,6 +507,32 @@ export function startServer(mux: MuxProvider): void {
         saveConfig({ theme: cmd.theme });
         broadcastState();
         break;
+      case "report-width": {
+        // Reject absurd values (min 10, max 80)
+        if (cmd.width < 10 || cmd.width > 80) {
+          log("report-width", "REJECTED — out of bounds", { width: cmd.width });
+          break;
+        }
+        log("report-width", "accepted", { width: cmd.width, prev: sidebarWidth });
+        sidebarWidth = cmd.width;
+        saveConfig({ sidebarWidth: cmd.width });
+        // Broadcast to all OTHER TUIs (the sender already has the correct width)
+        const p2 = getProviderWithSidebar();
+        if (p2) {
+          const panes = p2.listSidebarPanes();
+          for (const pane of panes) {
+            p2.resizeSidebarPane(pane.paneId, sidebarWidth);
+          }
+        }
+        server.publish("sidebar", JSON.stringify({ type: "resize", width: sidebarWidth }));
+        break;
+      }
+      case "quit":
+        quitAll();
+        break;
+      case "identify-pane":
+        // Store pane info for this client (for future use)
+        break;
     }
   }
 
@@ -330,7 +542,7 @@ export function startServer(mux: MuxProvider): void {
     gitHeadWatchers.clear();
     if (idleTimer) clearTimeout(idleTimer);
     try { unlinkSync(PID_FILE); } catch {}
-    mux.cleanupHooks();
+    for (const p of allProviders) p.cleanupHooks();
   }
 
   // --- Write PID + start server ---
@@ -359,11 +571,50 @@ export function startServer(mux: MuxProvider): void {
         return new Response("ok", { status: 200 });
       }
 
+      if (req.method === "POST" && url.pathname === "/resize-sidebars") {
+        log("http", "POST /resize-sidebars", { sidebarWidth });
+        resizeSidebars();
+        return new Response("ok", { status: 200 });
+      }
+
       if (req.method === "POST" && url.pathname === "/focus") {
         try {
-          let name = await req.text();
-          name = name.trim().replace(/^"+|"+$/g, "");
-          if (name) handleFocus(name);
+          const body = await req.text();
+          const ctx = parseContext(body);
+          if (ctx) {
+            handleFocus(ctx.session);
+          } else {
+            // Legacy: body is just the session name
+            const name = body.trim().replace(/^"+|"+$/g, "");
+            if (name) handleFocus(name);
+          }
+        } catch {}
+        return new Response("ok", { status: 200 });
+      }
+
+      if (req.method === "POST" && url.pathname === "/toggle") {
+        try {
+          const body = await req.text();
+          const ctx = parseContext(body) ?? undefined;
+          log("http", "POST /toggle", { ctx });
+          toggleSidebar(ctx);
+          broadcastState();
+        } catch {}
+        return new Response("ok", { status: 200 });
+      }
+
+      if (req.method === "POST" && url.pathname === "/quit") {
+        log("http", "POST /quit");
+        quitAll();
+        return new Response("ok", { status: 200 });
+      }
+
+      if (req.method === "POST" && url.pathname === "/ensure-sidebar") {
+        try {
+          const body = await req.text();
+          const ctx = parseContext(body) ?? undefined;
+          log("http", "POST /ensure-sidebar", { sidebarVisible, ctx });
+          ensureSidebarInWindow(undefined, ctx);
         } catch {}
         return new Response("ok", { status: 200 });
       }
@@ -375,6 +626,7 @@ export function startServer(mux: MuxProvider): void {
       open(ws) {
         ws.subscribe("sidebar");
         clientCount++;
+        log("ws", "client connected", { clientCount });
         if (idleTimer) {
           clearTimeout(idleTimer);
           idleTimer = null;
@@ -389,10 +641,12 @@ export function startServer(mux: MuxProvider): void {
         ws.unsubscribe("sidebar");
         clientCount--;
         if (clientCount < 0) clientCount = 0;
+        log("ws", "client disconnected", { clientCount });
       },
       message(ws, msg) {
         try {
           const cmd = JSON.parse(msg as string) as ClientCommand;
+          log("ws", "command", { type: cmd.type });
           handleCommand(cmd, ws);
         } catch {}
       },
@@ -401,11 +655,12 @@ export function startServer(mux: MuxProvider): void {
 
   // --- Bootstrap ---
 
-  mux.setupHooks(SERVER_HOST, SERVER_PORT);
+  for (const p of allProviders) p.setupHooks(SERVER_HOST, SERVER_PORT);
   broadcastState();
 
   process.on("SIGINT", () => { cleanup(); process.exit(0); });
   process.on("SIGTERM", () => { cleanup(); process.exit(0); });
 
-  console.log(`opensessions server listening on ${SERVER_HOST}:${SERVER_PORT} (mux: ${mux.name})`);
+  const names = allProviders.map((p) => p.name).join(", ");
+  console.log(`opensessions server listening on ${SERVER_HOST}:${SERVER_PORT} (mux: ${names})`);
 }
