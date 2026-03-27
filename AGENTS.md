@@ -98,7 +98,7 @@ interface AgentWatcher {
 - **TDD**: Red-green-refactor, vertical slices, one test at a time. Tests verify behavior through public interfaces.
 - **Sync mux calls**: MuxProvider methods are synchronous. Don't make them async.
 - **Preserve optimizations**: Batched tmux calls, 5s git cache with HEAD watchers, lightweight focus-only broadcasts.
-- **Built-in watchers in runtime**: Amp, Claude Code, and OpenCode have built-in watchers in `runtime/src/agents/watchers/`. Community agents use the `AgentWatcher` plugin interface.
+- **Built-in watchers in runtime**: Amp, Claude Code, Codex, and OpenCode have built-in watchers in `packages/runtime/src/agents/watchers/`. Community agents use the `AgentWatcher` plugin interface.
 - **OpenTUI Solid**: JSX needs `bunfig.toml` preload and `jsxImportSource: "@opentui/solid"` in tsconfig. Build needs `solidPlugin`.
 - **Never call `process.exit()` directly in TUI**: Use `renderer.destroy()`.
 

@@ -27,6 +27,14 @@ tmux is the only supported mux today. There is older zellij integration code in 
 
 ## Quick Start
 
+Fastest tmux install if you already use TPM:
+
+```bash
+grep -q "Ataraxy-Labs/opensessions" ~/.tmux.conf 2>/dev/null || printf '\nset -g @plugin '\''Ataraxy-Labs/opensessions'\''\n' >> ~/.tmux.conf && tmux source-file ~/.tmux.conf && ~/.tmux/plugins/tpm/bin/install_plugins
+```
+
+That adds the plugin to your tmux config, reloads tmux, and asks TPM to install it from GitHub. `bun` still needs to be installed locally; opensessions bootstraps its workspace inside the TPM checkout on first load.
+
 Smoke test from a local clone:
 
 ```bash
@@ -39,7 +47,7 @@ bun run start:tui
 
 That starts the sidebar client and auto-launches the server if needed.
 
-For the full tmux workflow with keybindings and automatic pane management, wire in `opensessions.tmux` and follow the guide below.
+For the full tmux workflow with keybindings, TPM setup, and automatic pane management, follow the guide below.
 
 ## Docs
 

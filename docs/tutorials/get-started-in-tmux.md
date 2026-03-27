@@ -1,14 +1,26 @@
 # Get Started In tmux
 
-This tutorial gets opensessions running as a real tmux sidebar from a local clone. By the end, you will be able to press `prefix s` to open the sidebar, jump into it with `prefix S`, switch directly with `prefix o 1` through `prefix o 9`, and see agent and Git state update live.
+This tutorial gets opensessions running as a real tmux sidebar, either through TPM or from a local clone. By the end, you will be able to press `prefix s` to open the sidebar, jump into it with `prefix S`, switch directly with `prefix o 1` through `prefix o 9`, and see agent and Git state update live.
 
 ## Prerequisites
 
 - Bun installed and available on `PATH`
 - tmux installed
-- A local checkout of this repository
+- Either TPM already installed or a local checkout of this repository
 
-## 1. Install workspace dependencies
+## 1. Fast path with TPM
+
+If you already use [TPM](https://github.com/tmux-plugins/tpm), run:
+
+```bash
+grep -q "Ataraxy-Labs/opensessions" ~/.tmux.conf 2>/dev/null || printf '\nset -g @plugin '\''Ataraxy-Labs/opensessions'\''\n' >> ~/.tmux.conf && tmux source-file ~/.tmux.conf && ~/.tmux/plugins/tpm/bin/install_plugins
+```
+
+Result: TPM clones the GitHub repo for you, installs the plugin, and `opensessions.tmux` bootstraps the Bun workspace from the plugin checkout the first time it loads.
+
+If you do not use TPM yet, continue with the local-clone flow below.
+
+## 2. Install workspace dependencies
 
 From the repository root:
 
@@ -18,7 +30,7 @@ bun install
 
 Result: the workspace packages are installed and the TUI can run.
 
-## 2. Add opensessions to your tmux config
+## 3. Add opensessions to your tmux config
 
 Open `~/.tmux.conf` and add these lines, replacing the path with your clone location:
 
@@ -35,7 +47,7 @@ source-file /absolute/path/to/opensessions/opensessions.tmux
 
 Result: tmux knows how to toggle the sidebar, how to reveal and focus it directly, and how to enter an opensessions command table for quick direct switching.
 
-## 3. Reload tmux configuration
+## 4. Reload tmux configuration
 
 Run:
 
@@ -55,7 +67,7 @@ Recommended shortcut scheme:
 
 If you use a terminal or window manager setup where no-prefix bindings are safe, you can also set `@opensessions-focus-global-key` and `@opensessions-index-keys`, but they are left unset by default to avoid conflicts.
 
-## 4. Open the sidebar
+## 5. Open the sidebar
 
 Inside tmux, press:
 
@@ -65,7 +77,7 @@ prefix s
 
 Result: tmux asks the opensessions server to toggle the sidebar. If the server is not running yet, the helper script starts it first.
 
-## 5. Verify the sidebar is live
+## 6. Verify the sidebar is live
 
 Use the sidebar to:
 
@@ -76,12 +88,13 @@ Use the sidebar to:
 
 Result: you should see the session list update and tmux switch the attached client to the selected session.
 
-## 6. Verify agent detection
+## 7. Verify agent detection
 
 In any tmux session whose working directory matches a repo you use with a supported agent, start one of these tools:
 
 - Amp
 - Claude Code
+- Codex
 - OpenCode
 
 Result: the session row should show a live status marker, and the detail panel should show thread-level information when available.

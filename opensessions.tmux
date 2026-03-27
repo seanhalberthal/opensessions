@@ -3,7 +3,7 @@
 # Registers keybindings and bootstraps the TUI if needed.
 #
 # Install:
-#   1. Add to .tmux.conf:  set -g @plugin 'palanikannan1437/opensessions'
+#   1. Add to .tmux.conf:  set -g @plugin 'Ataraxy-Labs/opensessions'
 #   2. Press prefix + I to install
 #   3. Requires: bun (https://bun.sh)
 #
