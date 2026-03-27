@@ -1,42 +1,23 @@
 # opensessions
 
-opensessions is a terminal sidebar for tmux that keeps session switching, agent activity, and repo context in one place.
+`opensessions` is a sidebar for `tmux` when your sessions, agents, and localhost tabs start multiplying.
 
-It runs inside your existing multiplexer instead of replacing it. The current build focuses on a Bun-powered local server, an OpenTUI sidebar, built-in agent watchers, and a capability-based mux abstraction that can be extended with plugins.
+It lives inside your existing tmux workflow instead of replacing it: one small pane for session switching, agent state, repo breadcrumbs, and quick jumps back into the right terminal.
 
 tmux is the only supported mux today. There is older zellij integration code in the repo, but it is not stable enough to document as supported; we are looking for maintainers who want to help bring it back to that bar.
 
-## What You Get
+## Today
 
 - Live agent state across sessions for Amp, Claude Code, Codex, and OpenCode.
-- Per-thread unseen markers for terminal agent states such as `done`, `error`, and `interrupted`.
-- Session metadata at a glance: branch name, dirty state, worktree detection, pane count, window count, uptime, and detected localhost ports.
-- Fast navigation with arrow keys, `j`/`k`, number keys, `Tab`, session reordering, session creation, session killing, a default tmux command table on `prefix o`, and optional no-prefix tmux shortcuts when you want them.
-- Theme switching from inside the sidebar, with built-in theme presets persisted to config.
-- A plugin model for additional mux providers and agent watchers.
-- A capability-based mux layer that can support additional providers over time.
-
-## Supported Today
-
-### Multiplexers
-
-- `tmux` via `@opensessions/mux-tmux`
-
-### Built-in Agent Watchers
-
-- Amp
-- Claude Code
-- Codex
-- OpenCode
-
-### Runtime
-
-- Bun workspace
-- Source-first execution (`bun run src/index.tsx`, `bun run .../start.ts`)
+- Per-thread unseen markers for `done`, `error`, and `interrupted` states.
+- Session context in the UI: branch in the list, working directory in the detail panel, thread names, and detected localhost ports.
+- Fast switching with `j`/`k`, arrows, `Tab`, `1`-`9`, session reordering, hide/restore, creation, and kill actions.
+- A tmux command table on `prefix o`, optional no-prefix shortcuts, in-app theme switching, and plugin hooks for more mux providers or watchers.
+- Bun workspace, source-first execution, and a local server on `127.0.0.1:7391`.
 
 ## Quick Start
 
-For a fast smoke test inside an existing tmux session:
+Smoke test from a local clone:
 
 ```bash
 git clone https://github.com/Ataraxy-Labs/opensessions.git
@@ -46,9 +27,11 @@ bun test
 cd packages/tui && bun run start
 ```
 
-That starts the sidebar client and auto-launches the local server if needed. For a real sidebar workflow with keybindings and automatic pane management, use one of the setup guides below.
+That starts the sidebar client and auto-launches the server if needed.
 
-## Documentation Map
+For the full tmux workflow with keybindings and automatic pane management, wire in `opensessions.tmux` and follow the guide below.
+
+## Docs
 
 - [Get started in tmux](./docs/tutorials/get-started-in-tmux.md)
 - [Configuration reference](./docs/reference/configuration.md)
@@ -57,73 +40,32 @@ That starts the sidebar client and auto-launches the local server if needed. For
 - [Contracts and extension interfaces](./CONTRACTS.md)
 - [Plugin authoring guide](./PLUGINS.md)
 
-## Feature Highlights
+## A Few Concrete Bits
 
-### Session Awareness
-
-- Merges sessions from every registered mux provider into one server state.
-- Persists custom ordering in `~/.config/opensessions/session-order.json`.
-- Tracks the currently focused session separately from the session currently attached to the client.
-
-### Agent Tracking
-
+- Session ordering is persisted in `~/.config/opensessions/session-order.json`.
 - Amp watcher reads `~/.local/share/amp/threads/*.json` and clears unseen state from Amp's `session.json` when a thread becomes seen there.
-- Claude Code watcher tails appended JSONL content in `~/.claude/projects/`.
-- Codex watcher reads transcript JSONL files in `~/.codex/sessions/` (or `$CODEX_HOME/sessions/`) and resolves sessions from `turn_context.cwd`.
+- Claude Code watcher reads JSONL transcripts in `~/.claude/projects/`.
+- Codex watcher reads transcript JSONL files in `~/.codex/sessions/` or `$CODEX_HOME/sessions/` and resolves sessions from `turn_context.cwd`.
 - OpenCode watcher polls the SQLite database in `~/.local/share/opencode/opencode.db`.
-- The tracker keeps multiple agent instances per terminal session using `threadId` when present.
+- Hidden sidebars are stashed in a tmux session named `_os_stash`, so they can come back without restarting the sidebar process.
+- Clicking a detected port opens `http://localhost:<port>`.
 
-### Repo Context
+## Repo Layout
 
-- Reads branch name and dirty state from the session working directory.
-- Detects Git worktrees.
-- Caches Git info for 5 seconds and watches Git `HEAD` files to invalidate cache quickly.
-- Scans descendant processes for listening localhost ports and surfaces them in the detail panel.
+- `packages/core` — server, watcher logic, config, themes, ordering, plugins
+- `packages/tui` — OpenTUI sidebar client built with Solid
+- `packages/mux` — mux contracts and type guards
+- `packages/mux-tmux` — tmux provider
+- `packages/tmux-sdk` — lower-level typed tmux bindings
+- `tmux-plugin` — tmux-facing scripts and plugin entrypoint
 
-### Sidebar UX
-
-- Theme picker inside the TUI.
-- Session detail panel with agent rows and thread names.
-- Mouse support for selecting sessions and opening detected `localhost` ports.
-- tmux sidebar stash session (`_os_stash`) so sidebars can be hidden without losing their process.
-
-## Repository Layout
-
-| Path | Purpose |
-| --- | --- |
-| `packages/core` | Server, shared contracts, config loader, theme registry, agent watchers, session ordering, plugin loader |
-| `packages/tui` | OpenTUI sidebar client built with Solid |
-| `packages/mux` | Capability-based mux type definitions and type guards |
-| `packages/mux-tmux` | tmux provider and tmux client wrapper |
-| `packages/tmux-sdk` | Lower-level typed tmux command bindings |
-| `tmux-plugin` | tmux-facing scripts and plugin package entrypoint |
-
-## Architecture In One Screen
-
-```text
-agent data files / databases
-        |
-        v
-built-in watchers + plugin watchers
-        |
-        v
-AgentTracker + mux providers + git/port/session state
-        |
-        v
-Bun WebSocket server on 127.0.0.1:7391
-        |
-        v
-OpenTUI sidebar clients running inside tmux panes
-```
-
-More detail: [docs/explanation/architecture.md](./docs/explanation/architecture.md)
+Experimental zellij work still exists under `packages/mux-zellij` and `integrations/zellij`, but it is outside the supported setup today.
 
 ## Current Caveats
 
-- The running app is effectively pinned to `127.0.0.1:7391` today. Helper scripts read `OPENSESSIONS_HOST` and `OPENSESSIONS_PORT`, but the server and TUI still use the fixed constants in `packages/core/src/shared.ts`.
-- `~/.config/opensessions/config.json` fields `mux`, `plugins`, `theme`, `sidebarWidth`, and `sidebarPosition` are used by the runtime. The parsed `port` and `keybinding` fields are not currently wired through the running app.
-- The core theme utilities support inline partial theme objects, but the server currently persists and broadcasts theme names rather than inline theme objects.
-- Experimental mux providers may still exist in the repo, but they are outside the current support promise unless documented otherwise.
+- The app is effectively pinned to `127.0.0.1:7391` today.
+- `theme`, `sidebarWidth`, `sidebarPosition`, `plugins`, and `mux` are wired through the runtime; other typed config fields are not all live yet.
+- Inline theme objects exist in core, but the running server persists and broadcasts theme names.
 
 ## License
 
