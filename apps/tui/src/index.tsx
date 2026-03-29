@@ -11,6 +11,7 @@ import {
   type SessionData,
   type ClientCommand,
   type Theme,
+  type MetadataTone,
   SERVER_PORT,
   SERVER_HOST,
   BUILTIN_THEMES,
@@ -52,6 +53,24 @@ const THEME_NAMES = Object.keys(BUILTIN_THEMES);
 const DEFAULT_DETAIL_PANEL_HEIGHT = 10;
 const MIN_DETAIL_PANEL_HEIGHT = 4;
 const RESIZE_DEBUG_LOG = "/tmp/opensessions-tui-resize.log";
+
+const TONE_ICONS: Record<MetadataTone, string> = {
+  neutral: "·",
+  info: "ℹ",
+  success: "✓",
+  warn: "⚠",
+  error: "✗",
+};
+
+function toneColor(tone: MetadataTone | undefined, palette: ReturnType<() => Theme["palette"]>): string {
+  switch (tone) {
+    case "success": return palette.green;
+    case "error": return palette.red;
+    case "warn": return palette.yellow;
+    case "info": return palette.blue;
+    default: return palette.overlay0;
+  }
+}
 
 function logResizeDebug(message: string, data?: Record<string, unknown>): void {
   const ts = new Date().toISOString();
@@ -1096,6 +1115,13 @@ function DetailPanel(props: DetailPanelProps) {
 
   const agents = () => props.session.agents ?? [];
   const hasAgents = () => agents().length > 0;
+  const meta = () => props.session.metadata;
+  const hasMeta = () => !!meta();
+  const visibleLogs = () => {
+    const m = meta();
+    if (!m || m.logs.length === 0) return [];
+    return m.logs.slice(-8);
+  };
 
   const truncDir = () => {
     const d = props.session.dir;
@@ -1166,6 +1192,60 @@ function DetailPanel(props: DetailPanelProps) {
             />
           )}
         </For>
+      </Show>
+
+      {/* Metadata: status, progress, logs */}
+      <Show when={hasMeta()}>
+        {(_) => {
+          const m = meta()!;
+          const progressText = () => {
+            const p = m.progress;
+            if (!p) return "";
+            if (p.current != null && p.total != null) return `${p.current}/${p.total}`;
+            if (p.percent != null) return `${Math.round(p.percent * 100)}%`;
+            return "";
+          };
+          return (
+            <box flexDirection="column">
+              <box height={1} />
+
+              {/* Status + progress on one line */}
+              <Show when={m.status || m.progress}>
+                <box flexDirection="row" paddingRight={1}>
+                  <Show when={m.status}>
+                    <text truncate flexGrow={1}>
+                      <span style={{ fg: toneColor(m.status!.tone, P()) }}>{TONE_ICONS[m.status!.tone ?? "neutral"]} {m.status!.text}</span>
+                    </text>
+                  </Show>
+                  <Show when={m.progress}>
+                    <text flexShrink={0}>
+                      <span style={{ fg: P().sky }}>
+                        {m.status ? " · " : ""}{progressText()}{m.progress!.label ? ` ${m.progress!.label}` : ""}
+                      </span>
+                    </text>
+                  </Show>
+                </box>
+              </Show>
+
+              {/* Log entries */}
+              <Show when={visibleLogs().length > 0}>
+                <For each={visibleLogs()}>
+                  {(entry) => (
+                    <text truncate>
+                      <span style={{ fg: toneColor(entry.tone, P()), attributes: DIM }}>
+                        {TONE_ICONS[entry.tone ?? "neutral"]}
+                      </span>
+                      <Show when={entry.source}>
+                        <span style={{ fg: P().surface2, attributes: DIM }}>{` [${entry.source}]`}</span>
+                      </Show>
+                      <span style={{ fg: P().overlay0 }}>{" "}{entry.message}</span>
+                    </text>
+                  )}
+                </For>
+              </Show>
+            </box>
+          );
+        }}
       </Show>
     </box>
   );
@@ -1363,6 +1443,24 @@ function SessionCard(props: SessionCardProps) {
     return `⌁${ports[0]}+${ports.length - 1}`;
   };
 
+  const metaSummary = () => {
+    const meta = props.session.metadata;
+    if (!meta) return "";
+    const parts: string[] = [];
+    if (meta.status) parts.push(meta.status.text);
+    if (meta.progress) {
+      if (meta.progress.current != null && meta.progress.total != null) {
+        parts.push(`${meta.progress.current}/${meta.progress.total}`);
+      } else if (meta.progress.percent != null) {
+        parts.push(`${Math.round(meta.progress.percent * 100)}%`);
+      }
+      if (meta.progress.label) parts.push(meta.progress.label);
+    }
+    return parts.join(" · ");
+  };
+
+  const metaTone = () => props.session.metadata?.status?.tone;
+
   const bgColor = () => {
     if (props.isFocused) return P().surface1;
     return "transparent";
@@ -1419,6 +1517,13 @@ function SessionCard(props: SessionCardProps) {
                 </text>
               </Show>
             </box>
+          </Show>
+
+          {/* Row 3: metadata summary (status + progress) */}
+          <Show when={metaSummary()}>
+            <text truncate>
+              <span style={{ fg: toneColor(metaTone(), P()), attributes: DIM }}>{metaSummary()}</span>
+            </text>
           </Show>
         </box>
       </box>

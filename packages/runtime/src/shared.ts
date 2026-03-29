@@ -22,6 +22,7 @@ export interface SessionData {
   agentState: AgentEvent | null;
   agents: AgentEvent[];
   eventTimestamps: number[];
+  metadata?: SessionMetadata | null;
 }
 
 export interface ServerState {
@@ -60,6 +61,37 @@ export interface ReIdentify {
 }
 
 export type ServerMessage = ServerState | FocusUpdate | ResizeNotify | QuitNotify | YourSession | ReIdentify;
+
+// --- Programmatic metadata (agent/script-pushed) ---
+
+export type MetadataTone = "neutral" | "info" | "success" | "warn" | "error";
+
+export interface MetadataStatus {
+  text: string;
+  tone?: MetadataTone;
+  ts: number;
+}
+
+export interface MetadataProgress {
+  current?: number;
+  total?: number;
+  percent?: number;
+  label?: string;
+  ts: number;
+}
+
+export interface MetadataLogEntry {
+  message: string;
+  tone?: MetadataTone;
+  source?: string;
+  ts: number;
+}
+
+export interface SessionMetadata {
+  status: MetadataStatus | null;
+  progress: MetadataProgress | null;
+  logs: MetadataLogEntry[];
+}
 
 export type ClientCommand =
   | { type: "switch-session"; name: string; clientTty?: string }

@@ -250,9 +250,11 @@ The current runtime passes `127.0.0.1:7391` here.
 - tmux sidebars can be hidden into a stash session instead of being killed.
 - tmux is the only supported built-in mux today. Other providers can still target these contracts, but they are currently outside the support bar unless documented otherwise.
 - The TUI expects a WebSocket server on `127.0.0.1:7391`.
+- The server exposes HTTP POST endpoints for programmatic metadata (status, progress, logs, notifications). See [docs/reference/programmatic-api.md](./docs/reference/programmatic-api.md).
 
 ## Where To Start
 
 - Build a custom watcher: see the `AgentWatcher` section above.
+- Push metadata from scripts: see [docs/reference/programmatic-api.md](./docs/reference/programmatic-api.md).
 - Build a plugin package or local plugin: see [PLUGINS.md](./PLUGINS.md).
 - Understand the end-to-end runtime: see [docs/explanation/architecture.md](./docs/explanation/architecture.md).

@@ -53,4 +53,9 @@ export type {
   QuitNotify,
   ServerMessage,
   ClientCommand,
+  MetadataTone,
+  MetadataStatus,
+  MetadataProgress,
+  MetadataLogEntry,
+  SessionMetadata,
 } from "./shared";

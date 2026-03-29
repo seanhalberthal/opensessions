@@ -7,6 +7,7 @@ import type { AgentEvent } from "../contracts/agent";
 import type { AgentWatcher, AgentWatcherContext } from "../contracts/agent-watcher";
 import { AgentTracker, instanceKey } from "../agents/tracker";
 import { SessionOrder } from "./session-order";
+import { SessionMetadataStore } from "./metadata-store";
 import { loadConfig, saveConfig } from "../config";
 import {
   resolveSidebarWidthFromResizeContext,
@@ -267,6 +268,7 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
   const allProviders = [mux, ...(extraProviders ?? [])];
   const allWatchers = watchers ?? [];
   const tracker = new AgentTracker();
+  const metadataStore = new SessionMetadataStore();
   const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
   const sessionOrderPath = join(home, ".config", "opensessions", "session-order.json");
   const sessionOrder = new SessionOrder(sessionOrderPath);
@@ -486,8 +488,11 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
         agentState: tracker.getState(name),
         agents: mergeAgentsWithPanePresence(name, tracker.getAgents(name)),
         eventTimestamps: tracker.getEventTimestamps(name),
+        metadata: metadataStore.get(name),
       };
     });
+
+    metadataStore.pruneSessions(new Set(sessions.map((s) => s.name)));
 
     if (sessions.length === 0) {
       focusedSession = null;
@@ -1641,6 +1646,105 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
           debouncedEnsureSidebar(ctx ?? undefined);
         } catch {}
         return new Response("ok", { status: 200 });
+      }
+
+      if (req.method === "POST" && url.pathname === "/set-status") {
+        try {
+          const body = await req.json() as { session?: string; text?: string | null; tone?: string };
+          if (!body.session || typeof body.session !== "string") {
+            return new Response("missing session", { status: 400 });
+          }
+          if (body.text === null || body.text === undefined) {
+            metadataStore.setStatus(body.session, null);
+          } else if (typeof body.text !== "string") {
+            return new Response("text must be a string or null", { status: 400 });
+          } else {
+            metadataStore.setStatus(body.session, { text: body.text, tone: body.tone as any });
+          }
+          broadcastState();
+          return new Response(null, { status: 204 });
+        } catch {
+          return new Response("invalid json", { status: 400 });
+        }
+      }
+
+      if (req.method === "POST" && url.pathname === "/set-progress") {
+        try {
+          const body = await req.json() as { session?: string; current?: number; total?: number; percent?: number; label?: string; clear?: boolean };
+          if (!body.session || typeof body.session !== "string") {
+            return new Response("missing session", { status: 400 });
+          }
+          if (body.clear) {
+            metadataStore.setProgress(body.session, null);
+          } else {
+            metadataStore.setProgress(body.session, {
+              current: body.current,
+              total: body.total,
+              percent: body.percent,
+              label: body.label,
+            });
+          }
+          broadcastState();
+          return new Response(null, { status: 204 });
+        } catch {
+          return new Response("invalid json", { status: 400 });
+        }
+      }
+
+      if (req.method === "POST" && url.pathname === "/log") {
+        try {
+          const body = await req.json() as { session?: string; message?: string; tone?: string; source?: string };
+          if (!body.session || typeof body.session !== "string") {
+            return new Response("missing session", { status: 400 });
+          }
+          if (!body.message || typeof body.message !== "string") {
+            return new Response("missing message", { status: 400 });
+          }
+          metadataStore.appendLog(body.session, {
+            message: body.message,
+            tone: body.tone as any,
+            source: body.source,
+          });
+          broadcastState();
+          return new Response(null, { status: 204 });
+        } catch {
+          return new Response("invalid json", { status: 400 });
+        }
+      }
+
+      if (req.method === "POST" && url.pathname === "/clear-log") {
+        try {
+          const body = await req.json() as { session?: string };
+          if (!body.session || typeof body.session !== "string") {
+            return new Response("missing session", { status: 400 });
+          }
+          metadataStore.clearLogs(body.session);
+          broadcastState();
+          return new Response(null, { status: 204 });
+        } catch {
+          return new Response("invalid json", { status: 400 });
+        }
+      }
+
+      if (req.method === "POST" && url.pathname === "/notify") {
+        try {
+          const body = await req.json() as { session?: string; message?: string; tone?: string; source?: string };
+          if (!body.session || typeof body.session !== "string") {
+            return new Response("missing session", { status: 400 });
+          }
+          if (!body.message || typeof body.message !== "string") {
+            return new Response("missing message", { status: 400 });
+          }
+          metadataStore.appendLog(body.session, {
+            message: body.message,
+            tone: body.tone as any,
+            source: body.source,
+          });
+          broadcastState();
+          return new Response(null, { status: 204 });
+        } catch {
+          return new Response("invalid json", { status: 400 });
+        }
       }
 
       if (server.upgrade(req, { data: {} })) return;
