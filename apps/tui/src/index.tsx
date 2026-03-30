@@ -1327,7 +1327,8 @@ function AgentListItem(props: AgentListItemProps) {
   const [isDismissHover, setIsDismissHover] = createSignal(false);
   const [isFlash, setIsFlash] = createSignal(false);
 
-  const isTerminal = () => TERMINAL_STATUSES.has(props.agent.status);
+  const isTerminal = () =>
+    TERMINAL_STATUSES.has(props.agent.status) && props.agent.liveness !== "alive";
   const isUnseen = () => isTerminal() && props.agent.unseen === true;
 
   const icon = () => {
@@ -1352,9 +1353,12 @@ function AgentListItem(props: AgentListItemProps) {
   const statusText = () => {
     if (props.agent.status === "tool-running") return "tools";
     if (props.agent.status === "running") return "running";
+    // Alive + done = idle at prompt, not finished
+    if (props.agent.status === "done" && props.agent.liveness === "alive") return "idle";
     if (props.agent.status === "done") return "done";
     if (props.agent.status === "error") return "error";
     if (props.agent.status === "stale") return "stale";
+    if (props.agent.status === "interrupted" && props.agent.liveness === "alive") return "idle";
     if (props.agent.status === "interrupted") return "stopped";
     if (props.agent.status === "waiting") return "waiting";
     return "";
@@ -1532,7 +1536,9 @@ function SessionCard(props: SessionCardProps) {
   };
 
   const agentCount = () =>
-    props.session.agents?.filter((a) => a.paneId || !["done", "error"].includes(a.status)).length ?? 0;
+    props.session.agents?.filter((a) =>
+      a.liveness === "alive" || !["done", "error", "interrupted"].includes(a.status),
+    ).length ?? 0;
 
   const agentBadge = () => {
     const n = agentCount();
