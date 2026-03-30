@@ -1117,6 +1117,7 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
     return false;
   }
 
+
   /** Scan all panes across all tmux sessions and identify running agents.
    *  Returns only {agent, paneId} — no threadId, status, or threadName.
    *  Watchers are the single source of truth for those fields. */
