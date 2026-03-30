@@ -334,14 +334,26 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
   const watcherCtx: AgentWatcherContext = {
     resolveSession(projectDir: string): string | null {
       const map = getDirSessionMap();
+      // Direct path match
       const direct = map.get(projectDir);
       if (direct) return direct;
+      // Substring match (parent/child directories)
       for (const [dir, name] of map) {
         if (projectDir.startsWith(dir + "/") || dir.startsWith(projectDir + "/")) return name;
+      }
+      // Encoded match: the watcher couldn't decode the path unambiguously,
+      // so try encoding each session dir and comparing against the encoded form.
+      // Claude Code encodes /, ., and _ as - in project directory names.
+      if (projectDir.startsWith("__encoded__:")) {
+        const encoded = projectDir.slice("__encoded__:".length);
+        for (const [dir, name] of map) {
+          if (dir.replace(/[/._]/g, "-") === encoded) return name;
+        }
       }
       return null;
     },
     emit(event: AgentEvent) {
+      log("agent-emit", event.agent, { session: event.session, status: event.status, threadId: event.threadId?.slice(0, 8) });
       tracker.applyEvent(event, { seed: !watchersSeeded });
       debouncedBroadcast();
     },

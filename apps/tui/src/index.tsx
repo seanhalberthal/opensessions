@@ -231,6 +231,15 @@ function App() {
   const [killTarget, setKillTarget] = createSignal<string | null>(null);
   let themeBeforePreview: Theme | null = null;
 
+  // --- Flash message (brief feedback after actions like refresh) ---
+  const [flashMessage, setFlashMessage] = createSignal<string | null>(null);
+  let flashTimer: ReturnType<typeof setTimeout> | null = null;
+  function flash(msg: string, ms = 1200) {
+    if (flashTimer) clearTimeout(flashTimer);
+    setFlashMessage(msg);
+    flashTimer = setTimeout(() => setFlashMessage(null), ms);
+  }
+
   const [clientTty, setClientTty] = createSignal(getClientTty());
   let ws: WebSocket | null = null;
   let startupFocusSynced = false;
@@ -709,6 +718,7 @@ function App() {
       }
       case "r":
         send({ type: "refresh" });
+        flash("refreshed");
         break;
       case "t":
         themeBeforePreview = theme();
@@ -776,6 +786,7 @@ function App() {
           <span style={{ fg: P().subtext0, attributes: BOLD }}>Sessions</span>
           <span style={{ fg: P().overlay0 }}>{" "}{String(sessions.length)}</span>
           {runningCount() > 0 ? <span style={{ fg: P().yellow }}>{" "}{"⚡"}{runningCount()}</span> : ""}
+          <Show when={flashMessage()}><span style={{ fg: P().overlay0, attributes: DIM }}>{" "}{flashMessage()}</span></Show>
           {errorCount() > 0 ? <span style={{ fg: P().red }}>{" "}{"✗"}{errorCount()}</span> : ""}
           {unseenCount() > 0 ? <span style={{ fg: P().teal }}>{" "}{"●"}{" "}{unseenCount()}</span> : ""}
         </text>

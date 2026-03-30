@@ -63,10 +63,17 @@
  *   STUCK_RUNNING_MS, we assume the process died and emit "stale".
  */
 
-import { watch, type FSWatcher } from "fs";
+import { watch, appendFileSync, type FSWatcher } from "fs";
 import { readdir, stat } from "fs/promises";
 import { join, basename } from "path";
 import { homedir } from "os";
+
+// Temporary debug logging — writes to same file as server
+function dbg(tag: string, msg: string, data?: Record<string, unknown>) {
+  const ts = new Date().toISOString().slice(11, 23);
+  const suffix = data ? " " + JSON.stringify(data) : "";
+  try { appendFileSync("/tmp/opensessions-debug.log", `[${ts}] [cc-watcher:${tag}] ${msg}${suffix}\n`); } catch {}
+}
 import type { AgentStatus } from "../../contracts/agent";
 import type { AgentWatcher, AgentWatcherContext } from "../../contracts/agent-watcher";
 
@@ -202,9 +209,25 @@ function extractThreadName(entry: JournalEntry): string | undefined {
   return text.slice(0, 80);
 }
 
-/** Decode Claude's encoded project dir name back to a path */
+/** Encode a path the same way Claude Code does (replace /, ., _ with -) */
+function encodeProjectDir(path: string): string {
+  return path.replace(/[/._]/g, "-");
+}
+
+/**
+ * Decode Claude's encoded project dir name back to a path.
+ *
+ * The encoding is ambiguous: both path separators and literal hyphens
+ * become `-`. We try the naive decode first, then check if the
+ * directory exists. If not, we leave the encoded form and rely on
+ * resolveSession to match via encodeProjectDir on session dirs.
+ */
 function decodeProjectDir(encoded: string): string {
-  return encoded.replace(/-/g, "/");
+  const naive = encoded.replace(/-/g, "/");
+  // Fast path: if the naive decode is a real directory, use it
+  try { if (require("fs").statSync(naive).isDirectory()) return naive; } catch {}
+  // Return the raw encoded form — resolveSession will match by encoding session dirs
+  return `__encoded__:${encoded}`;
 }
 
 // --- Watcher implementation ---
@@ -240,9 +263,16 @@ export class ClaudeCodeAgentWatcher implements AgentWatcher {
 
   /** Emit a status change event if we have a valid session mapping */
   private emitStatus(threadId: string, state: SessionState): void {
-    if (!this.ctx || !this.seeded || !state.projectDir) return;
+    if (!this.ctx || !this.seeded || !state.projectDir) {
+      dbg("emitStatus", "bail-early", { hasCtx: !!this.ctx, seeded: this.seeded, hasDir: !!state.projectDir });
+      return;
+    }
     const session = this.ctx.resolveSession(state.projectDir);
-    if (!session) return;
+    if (!session) {
+      dbg("emitStatus", "no-session-match", { projectDir: state.projectDir, status: state.status });
+      return;
+    }
+    dbg("emitStatus", "emitting", { session, status: state.status, threadId: threadId.slice(0, 8) });
     this.ctx.emit({
       agent: "claude-code",
       session,
@@ -358,6 +388,7 @@ export class ClaudeCodeAgentWatcher implements AgentWatcher {
   }
 
   private async scan(): Promise<void> {
+    dbg("scan", "enter", { scanning: this.scanning, hasCtx: !!this.ctx, seeded: this.seeded });
     if (this.scanning || !this.ctx) return;
     this.scanning = true;
 
@@ -387,10 +418,13 @@ export class ClaudeCodeAgentWatcher implements AgentWatcher {
     } finally {
       if (!this.seeded) {
         this.seeded = true;
+        dbg("seed", "complete", { sessionCount: this.sessions.size });
         // Emit seeded sessions with non-idle status (like amp watcher does)
         for (const [threadId, state] of this.sessions) {
+          dbg("seed", "check", { threadId: threadId.slice(0, 8), status: state.status, projectDir: state.projectDir });
           if (state.status === "idle" || !state.projectDir) continue;
           const session = this.ctx?.resolveSession(state.projectDir);
+          dbg("seed", "resolve", { projectDir: state.projectDir, session: session ?? "NULL" });
           if (!session) continue;
           this.ctx?.emit({
             agent: "claude-code",
