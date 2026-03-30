@@ -391,7 +391,7 @@ describe("AgentTracker", () => {
       expect(agents[0]!.liveness).toBe("alive"); // marked alive
     });
 
-    test("cleans up synthetic entry when threadId resolves to a watcher entry", () => {
+    test("cleans up synthetic entry when watcher creates entry for same agent", () => {
       // Scan 1: pane scanner can't resolve threadId → creates synthetic entry
       tracker.applyPanePresence("sess-1", [
         { agent: "claude-code", paneId: "%21" },
@@ -399,17 +399,9 @@ describe("AgentTracker", () => {
       expect(tracker.getAgents("sess-1").length).toBe(1);
       expect(tracker.getAgents("sess-1")[0]!.paneId).toBe("%21");
 
-      // Watcher catches up → creates entry with threadId
+      // Watcher catches up → creates entry with threadId, auto-cleans synthetic
       tracker.applyEvent(event({ session: "sess-1", agent: "claude-code", threadId: "abc", status: "running" }));
-      // Now there are 2 entries: synthetic "claude-code:pane:%21" + watcher "claude-code:abc"
-      expect(tracker.getAgents("sess-1").length).toBe(2);
-
-      // Scan 2: pane scanner resolves threadId this time
-      tracker.applyPanePresence("sess-1", [
-        { agent: "claude-code", paneId: "%21", threadId: "abc" },
-      ]);
-
-      // Synthetic entry should be cleaned up — only the watcher entry remains
+      // Synthetic should already be cleaned up — watcher entry inherits pane info
       const agents = tracker.getAgents("sess-1");
       expect(agents.length).toBe(1);
       expect(agents[0]!.threadId).toBe("abc");

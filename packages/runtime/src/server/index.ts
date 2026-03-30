@@ -1060,6 +1060,17 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
 
   // --- Pane agent scanning (detect agents running in current session panes) ---
 
+  /** User message prefixes that are system/shell output — not agent activity.
+   *  Matches tail-claude's systemOutputTags + hardNoiseTags. */
+  const NOISE_USER_PREFIXES = [
+    "<local-command-caveat>", "<local-command-stdout>", "<local-command-stderr>",
+    "<bash-input>", "<bash-stdout>", "<bash-stderr>",
+    "<system-reminder>", "<task-notification>",
+  ];
+  function isNoiseUserMessage(text: string | undefined): boolean {
+    return text != null && NOISE_USER_PREFIXES.some((p) => text.startsWith(p));
+  }
+
   // Pane presence is now folded into the tracker via applyPanePresence().
 
   /** Build parent→children map from a single ps snapshot (avoids per-pane pgrep calls). */
@@ -1220,8 +1231,8 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
                   : Array.isArray(content) ? content.find((c: any) => c.type === "text" && c.text)?.text : undefined;
                 if (text?.startsWith("[Request interrupted")) { lastStatus = "interrupted"; }
                 else if (text?.includes("<command-name>/exit</command-name>")) { lastStatus = "done"; }
-                else if (text?.includes("<command-name>/") || text?.startsWith("<local-command-caveat>")) { /* skip slash commands */ }
-                else if (text?.startsWith("<bash-input>") || text?.startsWith("<bash-stdout>") || text?.startsWith("<bash-stderr>")) { /* skip ! command I/O */ }
+                else if (text?.includes("<command-name>/")) { /* skip slash commands */ }
+                else if (isNoiseUserMessage(text)) { /* skip system/shell output */ }
                 else { lastStatus = "running"; }
               }
             } catch { continue; }

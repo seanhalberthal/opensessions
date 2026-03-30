@@ -40,7 +40,27 @@ export class AgentTracker {
       sessionInstances = new Map();
       this.instances.set(event.session, sessionInstances);
     }
+    // Preserve pane info from prior enrichment by applyPanePresence
+    const prev = sessionInstances.get(key);
+    if (prev?.paneId) {
+      event.paneId = event.paneId ?? prev.paneId;
+      event.liveness = event.liveness ?? prev.liveness;
+    }
     sessionInstances.set(key, event);
+
+    // Clean up any synthetic entries for this agent from the pane scanner
+    // (pane scanner may have created a synthetic with a stale threadId before the watcher seeded)
+    for (const [k, ev] of sessionInstances) {
+      if (k !== key && ev.agent === event.agent && (ev as any)._synthetic) {
+        // Transfer pane info from the synthetic to the watcher entry
+        if (ev.paneId && !event.paneId) {
+          event.paneId = ev.paneId;
+          event.liveness = ev.liveness;
+        }
+        sessionInstances.delete(k);
+        this.unseenInstances.delete(this.unseenKey(event.session, k));
+      }
+    }
 
     // Track event timestamps
     let timestamps = this.eventTimestamps.get(event.session);
@@ -251,45 +271,36 @@ export class AgentTracker {
         this.instances.set(session, sessionInstances);
       }
 
-      const key = pa.threadId ? instanceKey(pa.agent, pa.threadId) : null;
+      // Collect ALL entries for this agent to find the best one and deduplicate
+      const agentEntries: [string, AgentEvent][] = [];
+      for (const [k, ev] of sessionInstances) {
+        if (ev.agent === pa.agent) agentEntries.push([k, ev]);
+      }
 
-      // Try to match by threadId first
-      if (key && sessionInstances.has(key)) {
-        const existing = sessionInstances.get(key)!;
-        const wasDifferent = existing.paneId !== pa.paneId || existing.liveness !== "alive";
-        existing.paneId = pa.paneId;
-        existing.liveness = "alive";
-        // Enrich threadName from pane if watcher didn't provide one
-        if (!existing.threadName && pa.threadName) {
-          existing.threadName = pa.threadName;
+      if (agentEntries.length > 0) {
+        // Pick the canonical entry: prefer non-synthetic (watcher-sourced) entries
+        agentEntries.sort((a, b) => {
+          const aSynth = (a[1] as any)._synthetic ? 1 : 0;
+          const bSynth = (b[1] as any)._synthetic ? 1 : 0;
+          return aSynth - bSynth;
+        });
+        const [canonicalKey, canonical] = agentEntries[0]!;
+        const wasDifferent = canonical.paneId !== pa.paneId || canonical.liveness !== "alive";
+        canonical.paneId = pa.paneId;
+        canonical.liveness = "alive";
+        if (!canonical.threadName && pa.threadName) {
+          canonical.threadName = pa.threadName;
         }
-        // Clean up any synthetic entry that was created for this pane before
-        // the threadId could be resolved (prevents duplicates)
-        const syntheticKey = `${pa.agent}:pane:${pa.paneId}`;
-        if (syntheticKey !== key && sessionInstances.has(syntheticKey)) {
-          sessionInstances.delete(syntheticKey);
-          this.unseenInstances.delete(this.unseenKey(session, syntheticKey));
-          changed = true;
+        // Remove all non-canonical entries for this agent
+        for (const [k] of agentEntries) {
+          if (k !== canonicalKey) {
+            sessionInstances.delete(k);
+            this.unseenInstances.delete(this.unseenKey(session, k));
+            changed = true;
+          }
         }
         if (wasDifferent) changed = true;
         continue;
-      }
-
-      // If the watcher already tracks a different threadId for this agent in this session,
-      // enrich that entry instead of creating a duplicate. The pane scanner may have a stale
-      // sessionId (e.g. after /clear or /resume) but the pane is still the same live process.
-      {
-        let existingEntry: AgentEvent | null = null;
-        for (const [, ev] of sessionInstances) {
-          if (ev.agent === pa.agent) { existingEntry = ev; break; }
-        }
-        if (existingEntry) {
-          const wasDifferent = existingEntry.paneId !== pa.paneId || existingEntry.liveness !== "alive";
-          existingEntry.paneId = pa.paneId;
-          existingEntry.liveness = "alive";
-          if (wasDifferent) changed = true;
-          continue;
-        }
       }
 
       // Create synthetic entry for unmatched pane agent
@@ -297,7 +308,7 @@ export class AgentTracker {
         ? instanceKey(pa.agent, pa.threadId)
         : `${pa.agent}:pane:${pa.paneId}`;
       if (!sessionInstances.has(syntheticKey)) {
-        sessionInstances.set(syntheticKey, {
+        const syntheticEvent: AgentEvent & { _synthetic?: boolean } = {
           agent: pa.agent,
           session,
           status: pa.status ?? "idle",
@@ -306,7 +317,9 @@ export class AgentTracker {
           threadName: pa.threadName,
           paneId: pa.paneId,
           liveness: "alive",
-        });
+        };
+        syntheticEvent._synthetic = true;
+        sessionInstances.set(syntheticKey, syntheticEvent);
         changed = true;
       } else {
         // Update existing synthetic entry

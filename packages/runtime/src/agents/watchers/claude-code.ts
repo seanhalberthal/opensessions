@@ -116,11 +116,19 @@ const INTERRUPT_PATTERNS = [
 const EXIT_COMMAND_PATTERN = "<command-name>/exit</command-name>";
 /** Slash commands like /vim, /clear, /model write entries with XML markup — not agent activity */
 const SLASH_COMMAND_PATTERN = "<command-name>/";
-const LOCAL_COMMAND_CAVEAT = "<local-command-caveat>";
-/** User ran `! command` at the prompt — bash I/O entries are not agent activity */
-const BASH_INPUT_PREFIX = "<bash-input>";
-const BASH_STDOUT_PREFIX = "<bash-stdout>";
-const BASH_STDERR_PREFIX = "<bash-stderr>";
+
+/** User message prefixes that are system/shell output, not agent activity.
+ *  Ported from tail-claude's systemOutputTags + hardNoiseTags. */
+const NOISE_USER_PREFIXES = [
+  "<local-command-caveat>",
+  "<local-command-stdout>",
+  "<local-command-stderr>",
+  "<bash-input>",
+  "<bash-stdout>",
+  "<bash-stderr>",
+  "<system-reminder>",
+  "<task-notification>",
+];
 
 // --- Status detection ---
 
@@ -166,10 +174,10 @@ export function determineStatus(entry: JournalEntry): AgentStatus | null {
       if (INTERRUPT_PATTERNS.some((p) => text.startsWith(p))) return "interrupted";
       // /exit command → done
       if (text.includes(EXIT_COMMAND_PATTERN)) return "done";
-      // Slash commands (/vim, /clear, /model, etc.) and their caveats → skip
-      if (text.includes(SLASH_COMMAND_PATTERN) || text.startsWith(LOCAL_COMMAND_CAVEAT)) return null;
-      // Bash I/O from `! command` at the prompt → skip
-      if (text.startsWith(BASH_INPUT_PREFIX) || text.startsWith(BASH_STDOUT_PREFIX) || text.startsWith(BASH_STDERR_PREFIX)) return null;
+      // Slash commands (/vim, /clear, /model, etc.) → skip
+      if (text.includes(SLASH_COMMAND_PATTERN)) return null;
+      // System/shell output — not agent activity
+      if (NOISE_USER_PREFIXES.some((p) => text.startsWith(p))) return null;
     }
 
     // tool_result → running (tool just executed, next turn coming)
