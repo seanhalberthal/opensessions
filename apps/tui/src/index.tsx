@@ -202,6 +202,7 @@ function getLocalSessionName(): string | null {
 
 function App() {
   const renderer = useRenderer();
+  const startupSessionName = getLocalSessionName();
 
   // --- Theme state (driven by server) ---
   const [theme, setTheme] = createSignal<Theme>(resolveTheme(undefined));
@@ -210,8 +211,8 @@ function App() {
 
   const [sessions, setSessions] = createStore<SessionData[]>([]);
   const [focusedSession, setFocusedSession] = createSignal<string | null>(null);
-  const [currentSession, setCurrentSession] = createSignal<string | null>(null);
-  const [mySession, setMySession] = createSignal<string | null>(null);
+  const [currentSession, setCurrentSession] = createSignal<string | null>(startupSessionName);
+  const [mySession, setMySession] = createSignal<string | null>(startupSessionName);
   const [connected, setConnected] = createSignal(false);
   const [spinIdx, setSpinIdx] = createSignal(0);
   const [terminalWidth, setTerminalWidth] = createSignal(Math.max(0, renderer.terminalWidth));
@@ -235,7 +236,6 @@ function App() {
   let startupFocusSynced = false;
   let detailResizeStartY = 0;
   let detailResizeStartHeight = DEFAULT_DETAIL_PANEL_HEIGHT;
-  const startupSessionName = getLocalSessionName();
 
   const focusedData = createMemo(() =>
     sessions.find((s) => s.name === focusedSession()) ?? null,
@@ -250,6 +250,7 @@ function App() {
     // the server/hook round-trip from the next-Tab decision.
     // The server's focus/state broadcast will reconcile if needed.
     setCurrentSession(name);
+    setMySession(name);
     setFocusedSession(name);
     setPanelFocus("sessions");
     setFocusedAgentIdx(0);
@@ -526,13 +527,12 @@ function App() {
 
             setSessions(reconcile(msg.sessions, { key: "name" }));
             setFocusedSession(startupFocus);
-            setCurrentSession(msg.currentSession);
             setTheme(resolveTheme(msg.theme));
           } else if (msg.type === "focus") {
             setFocusedSession(msg.focusedSession);
-            setCurrentSession(msg.currentSession);
           } else if (msg.type === "your-session") {
             setMySession(msg.name);
+            setCurrentSession(msg.name);
             if (msg.clientTty) setClientTty(msg.clientTty);
 
             if (!startupFocusSynced && sessions.some((session) => session.name === msg.name)) {
@@ -639,6 +639,7 @@ function App() {
     switch (key.name) {
       case "q":
         send({ type: "quit" });
+        renderer.destroy();
         break;
       case "escape":
         if (panelFocus() === "agents") {

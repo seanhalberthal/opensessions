@@ -216,7 +216,7 @@ describe("AmpAgentWatcher", () => {
     // Directly call poll to seed, then set up the timer — mirrors initAndPoll but uses injected creds
     (watcher as any).ctx = ctx;
     await (watcher as any).poll();
-    (watcher as any).pollTimer = setInterval(() => (watcher as any).poll(), 2000);
+    (watcher as any).pollTimer = setInterval(() => (watcher as any).poll(), 1000);
   }
 
   test("seed scan emits current non-idle threads with titles", async () => {
@@ -677,7 +677,7 @@ describe("AmpAgentWatcher WebSocket (DTW)", () => {
         const body = JSON.parse(init.body as string);
         const token = dtwTokens.get(body.threadId);
         if (!token) return new Response("Not Found", { status: 404 });
-        return new Response(JSON.stringify({ wsToken: token, threadVersion: 1 }), {
+        return new Response(JSON.stringify({ wsToken: token, threadVersion: 1, usesDtw: true }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
@@ -737,7 +737,7 @@ describe("AmpAgentWatcher WebSocket (DTW)", () => {
   async function startWatcher() {
     (watcher as any).ctx = ctx;
     await (watcher as any).poll();
-    (watcher as any).pollTimer = setInterval(() => (watcher as any).poll(), 2000);
+    (watcher as any).pollTimer = setInterval(() => (watcher as any).poll(), 1000);
   }
 
   test("connects WebSocket for running thread after seed", async () => {
@@ -947,6 +947,43 @@ describe("AmpAgentWatcher WebSocket (DTW)", () => {
     expect(MockWebSocket.instances.length).toBe(0);
     expect(events).toHaveLength(1);
     expect(events[0]!.status).toBe("running");
+  });
+
+  test("skips WebSocket when usesDtw is false", async () => {
+    // Override fetch to return usesDtw: false
+    const baseFetch = watcher._fetch;
+    watcher._fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/api/durable-thread-workers") && init?.method === "POST") {
+        return new Response(JSON.stringify({ wsToken: "token-nodtw", usesDtw: false }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return baseFetch(input, init);
+    };
+
+    setThread("T-ws-nodtw", {
+      v: 1,
+      env: mkEnv("/projects/myapp"),
+      messages: [{ role: "user" }],
+    });
+
+    await startWatcher();
+    await new Promise((r) => setTimeout(r, 50));
+
+    // No WebSocket created — usesDtw is false
+    expect(MockWebSocket.instances.length).toBe(0);
+    // Thread is tracked as non-DTW
+    expect((watcher as any).nonDtwThreads.has("T-ws-nodtw")).toBe(true);
+    // Polling still works — event was emitted from seed
+    expect(events).toHaveLength(1);
+    expect(events[0]!.status).toBe("running");
+
+    // Subsequent poll should not attempt WebSocket either
+    await (watcher as any).poll();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(MockWebSocket.instances.length).toBe(0);
   });
 
   test("does not connect WebSocket for threads outside local sessions", async () => {

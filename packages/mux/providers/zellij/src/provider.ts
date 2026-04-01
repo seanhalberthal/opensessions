@@ -98,10 +98,17 @@ export class ZellijProvider implements MuxProviderV1, WindowCapable, SidebarCapa
   }
 
   listSessions(): MuxSessionInfo[] {
-    const raw = run(["zellij", "ls", "-s"]);
+    // Use long-form `zellij ls` so we can filter out EXITED sessions.
+    // Short form (`-s`) omits status, causing dead sessions to appear forever.
+    const raw = run(["zellij", "ls"]);
     if (!raw) return [];
 
-    const names = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+    const names = raw
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && !l.includes("(EXITED"))
+      .map((l) => l.split(/\s/)[0]!)
+      .filter(Boolean);
 
     const sessions: MuxSessionInfo[] = [];
     for (const name of names) {
@@ -207,7 +214,13 @@ export class ZellijProvider implements MuxProviderV1, WindowCapable, SidebarCapa
   }
 
   killSession(name: string): void {
+    // kill-session stops a running session; delete-session removes an exited one.
+    // We try both so the caller doesn't need to know the session state.
     Bun.spawnSync(["zellij", "kill-session", name], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    Bun.spawnSync(["zellij", "delete-session", name, "--force"], {
       stdout: "pipe",
       stderr: "pipe",
     });

@@ -365,9 +365,28 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   const clientTtys = new WeakMap<object, string>();
   const clientSessionNames = new WeakMap<object, string>();
+  const connectedClients = new Set<any>();
   const sessionProviders = new Map<string, MuxProvider>();
   // Map session name → client TTY (from hook context, for multi-client setups)
   const clientTtyBySession = new Map<string, string>();
+
+  function sendYourSession(ws: any, sessionName: string, clientTty?: string | null): void {
+    clientSessionNames.set(ws, sessionName);
+    ws.send(JSON.stringify({
+      type: "your-session",
+      name: sessionName,
+      clientTty: clientTty ?? clientTtyBySession.get(sessionName) ?? null,
+    }));
+  }
+
+  function syncClientSessionsForTty(clientTty: string | undefined, sessionName: string): void {
+    if (!clientTty) return;
+    clientTtyBySession.set(sessionName, clientTty);
+    for (const ws of connectedClients) {
+      if (clientTtys.get(ws) !== clientTty) continue;
+      sendYourSession(ws, sessionName, clientTty);
+    }
+  }
 
   function getCurrentSession(): string | null {
     // Try all providers until one returns a session
@@ -1391,6 +1410,7 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
         }
 
         p.switchSession(cmd.name, tty);
+        syncClientSessionsForTty(tty, cmd.name);
 
         // Optimistic server-side focus update — so other TUI instances see the
         // change immediately via broadcastFocusOnly, without waiting for the
@@ -1492,12 +1512,7 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
         break;
       case "identify-pane":
         // Store this client's session, reply with session + authoritative client TTY
-        clientSessionNames.set(ws, cmd.sessionName);
-        ws.send(JSON.stringify({
-          type: "your-session",
-          name: cmd.sessionName,
-          clientTty: clientTtyBySession.get(cmd.sessionName) ?? null,
-        }));
+        sendYourSession(ws, cmd.sessionName);
         break;
       case "focus-agent-pane":
         log("handleCommand", "focus-agent-pane received", { session: cmd.session, agent: cmd.agent, threadId: cmd.threadId, threadName: cmd.threadName });
@@ -1514,7 +1529,9 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
         const reported = clampSidebarWidth(cmd.width);
         const session = clientSessionNames.get(ws) ?? null;
         if (pendingEnforcement) {
-          pendingEnforcement = false;
+          // Re-arm pendingEnforcement: the enforce call below will resize
+          // panes, triggering SIGWINCH echoes that must also be absorbed.
+          setPendingEnforcement();
           enforceSidebarWidth();
           break;
         }
@@ -1525,6 +1542,7 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
         sidebarWidth = reported;
         saveConfig({ sidebarWidth });
         broadcastState();
+        setPendingEnforcement();
         enforceSidebarWidth(session ?? undefined);
         break;
       }
@@ -1584,6 +1602,7 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
           const ctx = parseContext(body);
           if (ctx) {
             setPendingEnforcement();
+            syncClientSessionsForTty(ctx.clientTty, ctx.session);
             handleFocus(ctx.session);
           } else {
             // Legacy: body is just the session name
@@ -1763,6 +1782,7 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
     },
     websocket: {
       open(ws) {
+        connectedClients.add(ws);
         ws.subscribe("sidebar");
         clientCount++;
         log("ws", "client connected", { clientCount });
@@ -1777,6 +1797,7 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
         }
       },
       close(ws) {
+        connectedClients.delete(ws);
         ws.unsubscribe("sidebar");
         clientCount--;
         if (clientCount < 0) clientCount = 0;

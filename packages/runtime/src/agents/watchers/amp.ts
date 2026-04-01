@@ -152,7 +152,7 @@ interface AgentStateMessage {
 }
 
 const DTW_WS_BASE = "wss://production.ampworkers.com";
-const POLL_MS = 2000;
+const POLL_MS = 1000;
 /** How long to wait before promoting quiet tool boundaries from running → waiting */
 const TOOL_WAIT_MS = 3_000;
 /** How long Amp can stay quiet before we consider the thread stale */
@@ -260,6 +260,8 @@ export class AmpAgentWatcher implements AgentWatcher {
   private threads = new Map<string, ThreadSnapshot>();
   /** Active WebSocket connections per thread ID */
   private wsConnections = new Map<string, WebSocketConnection>();
+  /** Threads known not to use DTW — skip WebSocket attempts */
+  private nonDtwThreads = new Set<string>();
   private wsRetryAfter = new Map<string, number>();
   private requestControllers = new Set<AbortController>();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -310,6 +312,7 @@ export class AmpAgentWatcher implements AgentWatcher {
     }
     this.wsConnections.clear();
     this.wsRetryAfter.clear();
+    this.nonDtwThreads.clear();
     this.threads.clear();
     this.seeded = false;
     this.scanning = false;
@@ -540,6 +543,7 @@ export class AmpAgentWatcher implements AgentWatcher {
   private async connectWebSocket(threadId: string, lifecycle = this.lifecycle): Promise<void> {
     if (!this.isActive(lifecycle) || !this.ampUrl || !this.apiKey) return;
     if (this.wsConnections.has(threadId)) return;
+    if (this.nonDtwThreads.has(threadId)) return;
     if (!this.shouldRetry(threadId)) return;
 
     const snapshot = this.threads.get(threadId);
@@ -548,13 +552,20 @@ export class AmpAgentWatcher implements AgentWatcher {
     const gen = ++this.wsGeneration;
     this.wsConnections.set(threadId, { gen, phase: "connecting", ws: null });
 
-    const token = await this.fetchDtwToken(threadId, lifecycle);
+    const dtwResult = await this.fetchDtwToken(threadId, lifecycle);
     const connection = this.wsConnections.get(threadId);
     if (!this.isActive(lifecycle) || !connection || connection.gen !== gen) return;
 
-    if (!token) {
+    if (!dtwResult || !dtwResult.wsToken) {
       this.wsConnections.delete(threadId);
       this.scheduleRetry(threadId);
+      return;
+    }
+
+    if (dtwResult.usesDtw === false) {
+      this.wsConnections.delete(threadId);
+      this.nonDtwThreads.add(threadId);
+      this.clearRetry(threadId);
       return;
     }
 
@@ -566,7 +577,7 @@ export class AmpAgentWatcher implements AgentWatcher {
     }
 
     try {
-      const wsUrl = `${DTW_WS_BASE}/threads/${threadId}?wsToken=${token}`;
+      const wsUrl = `${DTW_WS_BASE}/threads/${threadId}?wsToken=${dtwResult.wsToken}`;
       const ws = new this._WebSocket(wsUrl);
       const current = this.wsConnections.get(threadId);
       if (!current || current.gen !== gen) {
@@ -582,10 +593,12 @@ export class AmpAgentWatcher implements AgentWatcher {
         this.handleWsMessage(threadId, gen, event.data);
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         const active = this.wsConnections.get(threadId);
         if (!active || active.gen !== gen || active.ws !== ws) return;
         this.wsConnections.delete(threadId);
+        const code = (event as CloseEvent)?.code;
+        if (code) console.warn(`[amp-watcher] WebSocket closed for ${threadId} (code ${code})`);
         if (this.shouldStreamThread(this.threads.get(threadId)) && this.isActive(lifecycle)) {
           this.scheduleRetry(threadId);
         } else {
@@ -597,6 +610,7 @@ export class AmpAgentWatcher implements AgentWatcher {
         const active = this.wsConnections.get(threadId);
         if (!active || active.gen !== gen || active.ws !== ws) return;
         this.wsConnections.delete(threadId);
+        console.warn(`[amp-watcher] WebSocket error for ${threadId}`);
         if (this.shouldStreamThread(this.threads.get(threadId)) && this.isActive(lifecycle)) {
           this.scheduleRetry(threadId);
         } else {
@@ -669,8 +683,8 @@ export class AmpAgentWatcher implements AgentWatcher {
     }
   }
 
-  private async fetchDtwToken(threadId: string, lifecycle = this.lifecycle): Promise<string | null> {
-    const body = await this.fetchJson<DtwTokenResponse>(`${this.ampUrl}/api/durable-thread-workers`, {
+  private async fetchDtwToken(threadId: string, lifecycle = this.lifecycle): Promise<DtwTokenResponse | null> {
+    return this.fetchJson<DtwTokenResponse>(`${this.ampUrl}/api/durable-thread-workers`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
@@ -678,7 +692,6 @@ export class AmpAgentWatcher implements AgentWatcher {
       },
       body: JSON.stringify({ threadId }),
     }, lifecycle);
-    return body?.wsToken ?? null;
   }
 
   private async fetchThreadList(lifecycle = this.lifecycle): Promise<ApiThreadSummary[] | null> {
