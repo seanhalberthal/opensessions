@@ -287,7 +287,26 @@ export class PiAgentWatcher implements AgentWatcher {
         await this.processFile(filePath);
       }
     } finally {
-      if (!this.seeded) this.seeded = true;
+      if (!this.seeded) {
+        this.seeded = true;
+
+        for (const [threadId, snapshot] of this.sessions) {
+          if (snapshot.status === "idle" || !snapshot.projectDir) continue;
+
+          const session = this.ctx.resolveSession(snapshot.projectDir);
+          if (!session) continue;
+
+          this.ctx.emit({
+            agent: "pi",
+            session,
+            status: snapshot.status,
+            ts: Date.now(),
+            threadId: threadId,
+            ...(snapshot.threadName && { threadName: snapshot.threadName }),
+          });
+        }
+      }
+
       this.scanning = false;
     }
   }
