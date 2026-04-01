@@ -14,7 +14,10 @@ import { readdir, stat } from "fs/promises";
 import { homedir } from "os";
 import { basename, dirname, join } from "path";
 import type { AgentStatus } from "../../contracts/agent";
-import type { AgentWatcher, AgentWatcherContext } from "../../contracts/agent-watcher";
+import type {
+  AgentWatcher,
+  AgentWatcherContext,
+} from "../../contracts/agent-watcher";
 
 interface PiContentItem {
   type?: string;
@@ -74,11 +77,6 @@ function parseThreadId(filePath: string): string {
   return name.split("_").at(-1) ?? name;
 }
 
-function decodeProjectDir(encoded: string): string {
-  const decoded = encoded.replace(/-/g, "/").replace(/\/+/g, "/");
-  return decoded.length > 1 && decoded.endsWith("/") ? decoded.slice(0, -1) : decoded;
-}
-
 function normalizeThreadName(text: string | undefined): string | undefined {
   if (!text) return undefined;
   const line = text
@@ -89,7 +87,8 @@ function normalizeThreadName(text: string | undefined): string | undefined {
 }
 
 function extractThreadName(entry: PiEntry): string | undefined {
-  if (entry.type !== "message" || entry.message?.role !== "user") return undefined;
+  if (entry.type !== "message" || entry.message?.role !== "user")
+    return undefined;
 
   const content = entry.message.content;
   if (typeof content === "string") return normalizeThreadName(content);
@@ -150,7 +149,7 @@ async function collectSessionFiles(dir: string): Promise<string[]> {
   for (const entry of entries) {
     const fullPath = join(dir, entry.name);
     if (entry.isDirectory()) {
-      files.push(...await collectSessionFiles(fullPath));
+      files.push(...(await collectSessionFiles(fullPath)));
       continue;
     }
     if (entry.isFile() && entry.name.endsWith(".jsonl")) {
@@ -184,8 +183,16 @@ export class PiAgentWatcher implements AgentWatcher {
   }
 
   stop(): void {
-    if (this.fsWatcher) { try { this.fsWatcher.close(); } catch {} this.fsWatcher = null; }
-    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+    if (this.fsWatcher) {
+      try {
+        this.fsWatcher.close();
+      } catch {}
+      this.fsWatcher = null;
+    }
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
     this.ctx = null;
   }
 
@@ -210,7 +217,9 @@ export class PiAgentWatcher implements AgentWatcher {
       let text: string;
       try {
         const buf = await Bun.file(filePath).arrayBuffer();
-        text = new TextDecoder().decode(new Uint8Array(buf).subarray(prev.fileSize, fileStat.size));
+        text = new TextDecoder().decode(
+          new Uint8Array(buf).subarray(prev.fileSize, fileStat.size),
+        );
       } catch {
         return;
       }
@@ -227,12 +236,12 @@ export class PiAgentWatcher implements AgentWatcher {
       nextSnapshot = applyEntries(text, {
         status: "idle",
         fileSize: fileStat.size,
-        projectDir: decodeProjectDir(encodedDir),
+        projectDir: encodedDir,
       });
     }
 
     if (!nextSnapshot.projectDir) {
-      nextSnapshot.projectDir = decodeProjectDir(encodedDir);
+      nextSnapshot.projectDir = encodedDir;
     }
 
     this.sessions.set(threadId, nextSnapshot);
@@ -242,7 +251,9 @@ export class PiAgentWatcher implements AgentWatcher {
     const prevStatus = prev?.status;
     if (nextSnapshot.status === prevStatus) return;
 
-    const session = nextSnapshot.projectDir ? this.ctx.resolveSession(nextSnapshot.projectDir) : null;
+    const session = nextSnapshot.projectDir
+      ? this.ctx.resolveSession(nextSnapshot.projectDir)
+      : null;
     if (!session) return;
     if (!prev && nextSnapshot.status === "idle") return;
 
@@ -283,11 +294,14 @@ export class PiAgentWatcher implements AgentWatcher {
 
   private setupWatch(): void {
     try {
-      this.fsWatcher = watch(this.sessionsDir, { recursive: true }, (_eventType, filename) => {
-        if (!filename?.endsWith(".jsonl")) return;
-        this.processFile(join(this.sessionsDir, filename));
-      });
-    } catch {
-    }
+      this.fsWatcher = watch(
+        this.sessionsDir,
+        { recursive: true },
+        (_eventType, filename) => {
+          if (!filename?.endsWith(".jsonl")) return;
+          this.processFile(join(this.sessionsDir, filename));
+        },
+      );
+    } catch {}
   }
 }
