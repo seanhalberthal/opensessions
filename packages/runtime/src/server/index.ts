@@ -5,7 +5,7 @@ import type { MuxProvider } from "../contracts/mux";
 import { isFullSidebarCapable, isBatchCapable } from "../contracts/mux";
 import type { AgentEvent } from "../contracts/agent";
 import type { AgentWatcher, AgentWatcherContext } from "../contracts/agent-watcher";
-import { AgentTracker, instanceKey } from "../agents/tracker";
+import { AgentTracker } from "../agents/tracker";
 import { SessionOrder } from "./session-order";
 import { SessionMetadataStore } from "./metadata-store";
 import { buildLocalLinks, loadPortlessState } from "./portless";
@@ -334,14 +334,26 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
   const watcherCtx: AgentWatcherContext = {
     resolveSession(projectDir: string): string | null {
       const map = getDirSessionMap();
+      // Direct path match
       const direct = map.get(projectDir);
       if (direct) return direct;
+      // Substring match (parent/child directories)
       for (const [dir, name] of map) {
         if (projectDir.startsWith(dir + "/") || dir.startsWith(projectDir + "/")) return name;
+      }
+      // Encoded match: the watcher couldn't decode the path unambiguously,
+      // so try encoding each session dir and comparing against the encoded form.
+      // Claude Code encodes /, ., and _ as - in project directory names.
+      if (projectDir.startsWith("__encoded__:")) {
+        const encoded = projectDir.slice("__encoded__:".length);
+        for (const [dir, name] of map) {
+          if (dir.replace(/[/._]/g, "-") === encoded) return name;
+        }
       }
       return null;
     },
     emit(event: AgentEvent) {
+      log("agent-emit", event.agent, { session: event.session, status: event.status, threadId: event.threadId?.slice(0, 8) });
       tracker.applyEvent(event, { seed: !watchersSeeded });
       debouncedBroadcast();
     },
@@ -399,43 +411,6 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
     }
     log("getCurrentSession", "no provider returned a session");
     return null;
-  }
-
-  /** Merge pane-detected agents into watcher-provided agents for a session.
-   *  Watcher events take precedence — pane presence only adds synthetic entries
-   *  for agents that aren't already tracked by watchers. */
-  function mergeAgentsWithPanePresence(sessionName: string, watcherAgents: AgentEvent[]): AgentEvent[] {
-    const paneAgents = paneAgentsBySession.get(sessionName);
-    if (!paneAgents || paneAgents.size === 0) return watcherAgents;
-
-    const result = [...watcherAgents];
-    // Build a set of tracked agent:threadId keys for matching
-    const trackedByKey = new Set(watcherAgents.map((a) => instanceKey(a.agent, a.threadId)));
-    // Also track which agent names + threadIds are covered by watchers
-    const trackedThreadIds = new Set(
-      watcherAgents.filter((a) => a.threadId).map((a) => `${a.agent}:${a.threadId}`),
-    );
-
-    for (const [_key, presence] of paneAgents) {
-      // If the pane scanner resolved a threadId, check if watcher already tracks it
-      if (presence.threadId && trackedThreadIds.has(`${presence.agent}:${presence.threadId}`)) continue;
-      // Check by instanceKey as well
-      if (trackedByKey.has(instanceKey(presence.agent, presence.threadId))) continue;
-      // If we have no threadId from pane scan and watcher tracks any instance of this agent, skip
-      if (!presence.threadId && watcherAgents.some((a) => a.agent === presence.agent)) continue;
-
-      result.push({
-        agent: presence.agent,
-        session: sessionName,
-        status: presence.status ?? "idle",
-        ts: presence.lastSeenTs,
-        threadId: presence.threadId,
-        threadName: presence.threadName,
-        paneId: presence.paneId,
-      });
-    }
-
-    return result;
   }
 
   function computeState(): ServerState {
@@ -504,7 +479,7 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
         windows,
         uptime,
         agentState: tracker.getState(name),
-        agents: mergeAgentsWithPanePresence(name, tracker.getAgents(name)),
+        agents: tracker.getAgents(name),
         eventTimestamps: tracker.getEventTimestamps(name),
         metadata: metadataStore.get(name),
       };
@@ -893,7 +868,7 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
       const trimmed = childPid.trim();
       if (!trimmed) continue;
       const childCmd = shell(["ps", "-p", trimmed, "-o", "comm="]);
-      if (childCmd && patterns.some((pat) => childCmd.toLowerCase().includes(pat))) return true;
+      if (childCmd && patterns.some((pat) => commMatches(childCmd.toLowerCase(), pat))) return true;
       if (matchProcessTree(trimmed, patterns, depth + 1)) return true;
     }
     return false;
@@ -1085,18 +1060,7 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
 
   // --- Pane agent scanning (detect agents running in current session panes) ---
 
-  interface PaneAgentPresence {
-    agent: string;
-    session: string;
-    paneId: string;
-    threadId?: string;
-    threadName?: string;
-    status?: import("../contracts/agent").AgentStatus;
-    lastSeenTs: number;
-  }
-
-  // Pane agent presence per session: sessionName → Map<instanceKey, PaneAgentPresence>
-  let paneAgentsBySession = new Map<string, Map<string, PaneAgentPresence>>();
+  // Pane presence is now folded into the tracker via applyPanePresence().
 
   /** Build parent→children map from a single ps snapshot (avoids per-pane pgrep calls). */
   function buildProcessTree(): { childrenOf: Map<number, number[]>; commOf: Map<number, string> } {
@@ -1118,6 +1082,18 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
     return { childrenOf, commOf };
   }
 
+  /** Match a comm string against a pattern as a whole word.
+   *  "claude" matches "claude", "/usr/bin/claude", "claude-code"
+   *  but NOT "tail-claude" or "my-claude-fork". The pattern must appear
+   *  at the start of the comm or after a path separator (/). */
+  function commMatches(comm: string, pat: string): boolean {
+    const idx = comm.indexOf(pat);
+    if (idx < 0) return false;
+    // Pattern must be at start, or preceded by a path separator
+    if (idx > 0 && comm[idx - 1] !== "/") return false;
+    return true;
+  }
+
   /** Walk up to 3 levels of child processes using a pre-built process tree. */
   function matchProcessTreeFast(
     pid: number, patterns: string[],
@@ -1128,144 +1104,17 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
     if (!children) return false;
     for (const childPid of children) {
       const comm = tree.commOf.get(childPid);
-      if (comm && patterns.some((pat) => comm.includes(pat))) return true;
+      if (comm && patterns.some((pat) => commMatches(comm, pat))) return true;
       if (matchProcessTreeFast(childPid, patterns, tree, depth + 1)) return true;
     }
     return false;
   }
 
-  /** Find child PID matching a name pattern using pre-built process tree. */
-  function findChildPidFast(
-    pid: number, name: string,
-    tree: ReturnType<typeof buildProcessTree>, depth = 0,
-  ): number | undefined {
-    if (depth > 2) return undefined;
-    const children = tree.childrenOf.get(pid);
-    if (!children) return undefined;
-    for (const childPid of children) {
-      const comm = tree.commOf.get(childPid);
-      if (comm?.includes(name)) return childPid;
-      const found = findChildPidFast(childPid, name, tree, depth + 1);
-      if (found) return found;
-    }
-    return undefined;
-  }
-
-  /** Resolve threadId/threadName for an amp pane from its title. */
-  function resolveAmpPaneInfo(title: string): { threadId?: string; threadName?: string } {
-    // Amp pane title format: "amp - <threadName> - <dir>"
-    if (!title.toLowerCase().startsWith("amp - ")) return {};
-    const rest = title.slice(6);
-    const dashIdx = rest.lastIndexOf(" - ");
-    const threadName = dashIdx > 0 ? rest.slice(0, dashIdx) : rest;
-    return { threadName: threadName || undefined };
-  }
-
-  /** Resolve threadId/threadName/status for a Claude Code pane via ~/.claude/sessions/<pid>.json + journal. */
-  function resolveClaudeCodePaneInfo(
-    panePid: number, tree: ReturnType<typeof buildProcessTree>,
-  ): { threadId?: string; threadName?: string; status?: import("../contracts/agent").AgentStatus } {
-    const agentPid = findChildPidFast(panePid, "claude", tree);
-    if (!agentPid) return {};
-    const sessionsDir = join(homedir(), ".claude", "sessions");
-    try {
-      const data = JSON.parse(readFileSync(join(sessionsDir, `${agentPid}.json`), "utf-8"));
-      const threadId: string | undefined = data.sessionId;
-      if (!threadId) return {};
-      // Try to get thread name and status from the journal
-      const journalInfo = resolveClaudeCodeJournalInfo(threadId);
-      return { threadId, ...journalInfo };
-    } catch { return {}; }
-  }
-
-  /** Read the JSONL journal to extract thread name and current status. */
-  function resolveClaudeCodeJournalInfo(threadId: string): { threadName?: string; status?: import("../contracts/agent").AgentStatus } {
-    const projectsDir = join(homedir(), ".claude", "projects");
-    try {
-      const dirs = require("fs").readdirSync(projectsDir) as string[];
-      for (const dir of dirs) {
-        const filePath = join(projectsDir, dir, `${threadId}.jsonl`);
-        try {
-          const text = readFileSync(filePath, "utf-8");
-          const lines = text.split("\n").filter(Boolean);
-          let threadName: string | undefined;
-          let lastStatus: import("../contracts/agent").AgentStatus = "idle";
-
-          for (const line of lines) {
-            try {
-              const entry = JSON.parse(line);
-
-              // custom-title from /rename always wins
-              if (entry.type === "custom-title" && typeof entry.customTitle === "string") {
-                threadName = entry.customTitle;
-                continue;
-              }
-
-              const msg = entry.message;
-              if (!msg?.role) continue;
-
-              // Extract thread name from first user message (fallback)
-              if (!threadName && msg.role === "user") {
-                const content = msg.content;
-                let t: string | undefined;
-                if (typeof content === "string") t = content;
-                else if (Array.isArray(content)) t = content.find((c: any) => c.type === "text" && c.text)?.text;
-                if (t && !t.startsWith("<") && !t.startsWith("{") && !t.startsWith("[Request")) threadName = t.slice(0, 80);
-              }
-
-              // Determine status (same logic as watcher's determineStatus)
-              if (msg.role === "assistant") {
-                const items = Array.isArray(msg.content) ? msg.content : [];
-                if (items.some((c: any) => c.type === "tool_use")) { lastStatus = "running"; }
-                else if (items.some((c: any) => c.type === "thinking")) { lastStatus = "running"; }
-                else if (!msg.stop_reason) { lastStatus = "running"; }
-                else if (msg.stop_reason === "end_turn") { lastStatus = "done"; }
-                else if (msg.stop_reason === "tool_use") { lastStatus = "running"; }
-                else { lastStatus = "done"; }
-              } else if (msg.role === "user") {
-                const content = msg.content;
-                const text = typeof content === "string" ? content
-                  : Array.isArray(content) ? content.find((c: any) => c.type === "text" && c.text)?.text : undefined;
-                if (text?.startsWith("[Request interrupted")) { lastStatus = "interrupted"; }
-                else if (text?.includes("<command-name>/exit</command-name>")) { lastStatus = "done"; }
-                else if (text?.includes("<command-name>/") || text?.startsWith("<local-command-caveat>")) { /* skip slash commands */ }
-                else { lastStatus = "running"; }
-              }
-            } catch { continue; }
-          }
-
-          return { threadName, status: lastStatus };
-        } catch { continue; }
-      }
-    } catch {}
-    return {};
-  }
-
-  /** Resolve threadId for a Codex pane via logs_1.sqlite. */
-  function resolveCodexPaneInfo(
-    panePid: number, tree: ReturnType<typeof buildProcessTree>,
-  ): { threadId?: string; threadName?: string } {
-    const agentPid = findChildPidFast(panePid, "codex", tree);
-    if (!agentPid) return {};
-    const dbPath = join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "logs_1.sqlite");
-    let db: any;
-    try {
-      const { Database } = require("bun:sqlite");
-      db = new Database(dbPath, { readonly: true });
-    } catch { return {}; }
-    try {
-      const row = db.query(
-        `SELECT thread_id FROM logs WHERE process_uuid LIKE ? AND thread_id IS NOT NULL ORDER BY ts DESC LIMIT 1`,
-      ).get(`pid:${agentPid}:%`);
-      if (row?.thread_id) return { threadId: row.thread_id };
-    } catch {} finally { try { db.close(); } catch {} }
-    return {};
-  }
-
   /** Scan all panes across all tmux sessions and identify running agents.
-   *  Uses a single `tmux list-panes -a` call for efficiency. */
-  function scanAllTmuxPaneAgents(): Map<string, Map<string, PaneAgentPresence>> {
-    const result = new Map<string, Map<string, PaneAgentPresence>>();
+   *  Returns only {agent, paneId} — no threadId, status, or threadName.
+   *  Watchers are the single source of truth for those fields. */
+  function scanAllTmuxPaneAgents(): Map<string, import("../contracts/agent").PanePresenceInput[]> {
+    const result = new Map<string, import("../contracts/agent").PanePresenceInput[]>();
 
     const raw = shell([
       "tmux", "list-panes", "-a",
@@ -1298,7 +1147,6 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
 
     // Build process tree once for all panes
     const tree = buildProcessTree();
-    const now = Date.now();
 
     for (const pane of nonSidebar) {
       for (const [agentName, patterns] of Object.entries(AGENT_TITLE_PATTERNS)) {
@@ -1306,82 +1154,44 @@ export function startServer(mux: MuxProvider, extraProviders?: MuxProvider[], wa
         // (e.g. an Amp thread named "Detect Claude session names" matches "claude")
         if (!matchProcessTreeFast(pane.pid, patterns, tree)) continue;
 
-        let threadId: string | undefined;
-        let threadName: string | undefined;
-        let status: import("../contracts/agent").AgentStatus | undefined;
-
-        // Resolve thread info per agent type
-        if (agentName === "amp") {
-          const info = resolveAmpPaneInfo(pane.title);
-          threadName = info.threadName;
-        } else if (agentName === "claude-code") {
-          const info = resolveClaudeCodePaneInfo(pane.pid, tree);
-          threadId = info.threadId;
-          threadName = info.threadName;
-          status = info.status;
-        } else if (agentName === "codex") {
-          const info = resolveCodexPaneInfo(pane.pid, tree);
-          threadId = info.threadId;
-        }
-
-        const key = `${agentName}:pane:${pane.id}`;
         let sessionAgents = result.get(pane.session);
         if (!sessionAgents) {
-          sessionAgents = new Map();
+          sessionAgents = [];
           result.set(pane.session, sessionAgents);
         }
-        sessionAgents.set(key, {
-          agent: agentName,
-          session: pane.session,
-          paneId: pane.id,
-          threadId,
-          threadName,
-          status,
-          lastSeenTs: now,
-        });
+        sessionAgents.push({ agent: agentName, paneId: pane.id });
       }
     }
 
     return result;
   }
 
-  /** Refresh pane agent cache for all tmux sessions. */
+  /** Refresh pane agent presence by scanning tmux panes and folding results into the tracker. */
   function refreshPaneAgents(): void {
-    // Check if any provider is tmux
     const hasTmux = allProviders.some((p) => p.name === "tmux");
     if (!hasTmux) {
-      if (paneAgentsBySession.size > 0) {
-        paneAgentsBySession.clear();
-        tracker.setPinnedInstancesMulti(new Map());
-        broadcastState();
-      }
+      // No tmux provider — mark all previously-alive agents as exited
+      // by applying empty presence for each tracked session
+      // (applyPanePresence handles the exited transition internally)
       return;
     }
 
     const nextBySession = scanAllTmuxPaneAgents();
-    const allPinnedKeys = new Map<string, string[]>();
-    for (const [session, agents] of nextBySession) {
-      allPinnedKeys.set(session, [...agents.keys()]);
+    let changed = false;
+
+    // Apply presence for sessions that have pane agents
+    for (const [session, paneAgents] of nextBySession) {
+      if (tracker.applyPanePresence(session, paneAgents)) changed = true;
     }
 
-    // Check if anything changed
-    let changed = paneAgentsBySession.size !== nextBySession.size;
-    if (!changed) {
-      for (const [session, agents] of nextBySession) {
-        const prev = paneAgentsBySession.get(session);
-        if (!prev || prev.size !== agents.size) { changed = true; break; }
-        for (const [key, agent] of agents) {
-          const prevAgent = prev.get(key);
-          if (!prevAgent || prevAgent.threadName !== agent.threadName || prevAgent.status !== agent.status) { changed = true; break; }
+    // For sessions NOT in the scan, apply empty presence to transition alive → exited
+    if (lastState) {
+      for (const s of lastState.sessions) {
+        if (!nextBySession.has(s.name)) {
+          if (tracker.applyPanePresence(s.name, [])) changed = true;
         }
-        if (changed) break;
       }
     }
-
-    paneAgentsBySession = nextBySession;
-
-    // Update tracker pinning for all sessions
-    tracker.setPinnedInstancesMulti(allPinnedKeys);
 
     if (changed) broadcastState();
   }

@@ -95,6 +95,8 @@ interface SessionState {
   toolUseSeenAt?: number;
   /** Timestamp when the file was last observed to have grown (for stuck detection) */
   lastGrowthAt?: number;
+  /** File mtime at last observation — used for seed emission ts instead of Date.now() */
+  lastMtimeMs?: number;
 }
 
 const POLL_MS = 2000;
@@ -114,7 +116,19 @@ const INTERRUPT_PATTERNS = [
 const EXIT_COMMAND_PATTERN = "<command-name>/exit</command-name>";
 /** Slash commands like /vim, /clear, /model write entries with XML markup — not agent activity */
 const SLASH_COMMAND_PATTERN = "<command-name>/";
-const LOCAL_COMMAND_CAVEAT = "<local-command-caveat>";
+
+/** User message prefixes that are system/shell output, not agent activity.
+ *  Ported from tail-claude's systemOutputTags + hardNoiseTags. */
+const NOISE_USER_PREFIXES = [
+  "<local-command-caveat>",
+  "<local-command-stdout>",
+  "<local-command-stderr>",
+  "<bash-input>",
+  "<bash-stdout>",
+  "<bash-stderr>",
+  "<system-reminder>",
+  "<task-notification>",
+];
 
 // --- Status detection ---
 
@@ -160,8 +174,10 @@ export function determineStatus(entry: JournalEntry): AgentStatus | null {
       if (INTERRUPT_PATTERNS.some((p) => text.startsWith(p))) return "interrupted";
       // /exit command → done
       if (text.includes(EXIT_COMMAND_PATTERN)) return "done";
-      // Slash commands (/vim, /clear, /model, etc.) and their caveats → skip
-      if (text.includes(SLASH_COMMAND_PATTERN) || text.startsWith(LOCAL_COMMAND_CAVEAT)) return null;
+      // Slash commands (/vim, /clear, /model, etc.) → skip
+      if (text.includes(SLASH_COMMAND_PATTERN)) return null;
+      // System/shell output — not agent activity
+      if (NOISE_USER_PREFIXES.some((p) => text.startsWith(p))) return null;
     }
 
     // tool_result → running (tool just executed, next turn coming)
@@ -202,9 +218,25 @@ function extractThreadName(entry: JournalEntry): string | undefined {
   return text.slice(0, 80);
 }
 
-/** Decode Claude's encoded project dir name back to a path */
+/** Encode a path the same way Claude Code does (replace /, ., _ with -) */
+function encodeProjectDir(path: string): string {
+  return path.replace(/[/._]/g, "-");
+}
+
+/**
+ * Decode Claude's encoded project dir name back to a path.
+ *
+ * The encoding is ambiguous: both path separators and literal hyphens
+ * become `-`. We try the naive decode first, then check if the
+ * directory exists. If not, we leave the encoded form and rely on
+ * resolveSession to match via encodeProjectDir on session dirs.
+ */
 function decodeProjectDir(encoded: string): string {
-  return encoded.replace(/-/g, "/");
+  const naive = encoded.replace(/-/g, "/");
+  // Fast path: if the naive decode is a real directory, use it
+  try { if (require("fs").statSync(naive).isDirectory()) return naive; } catch {}
+  // Return the raw encoded form — resolveSession will match by encoding session dirs
+  return `__encoded__:${encoded}`;
 }
 
 // --- Watcher implementation ---
@@ -219,6 +251,7 @@ export class ClaudeCodeAgentWatcher implements AgentWatcher {
   private projectsDir: string;
   private scanning = false;
   private seeded = false;
+  private scanPromise: Promise<void> | null = null;
 
   constructor() {
     this.projectsDir = join(homedir(), ".claude", "projects");
@@ -236,6 +269,13 @@ export class ClaudeCodeAgentWatcher implements AgentWatcher {
     this.fsWatchers = [];
     if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
     this.ctx = null;
+  }
+
+  /** Trigger an immediate scan and return when complete.
+   *  If a scan is already in flight, waits for it then runs another. */
+  async flush(): Promise<void> {
+    if (this.scanPromise) await this.scanPromise;
+    await this.scan();
   }
 
   /** Emit a status change event if we have a valid session mapping */
@@ -257,7 +297,8 @@ export class ClaudeCodeAgentWatcher implements AgentWatcher {
     if (!this.ctx) return;
 
     let size: number;
-    try { size = (await stat(filePath)).size; } catch { return; }
+    let mtimeMs: number;
+    try { const s = await stat(filePath); size = s.size; mtimeMs = s.mtimeMs; } catch { return; }
 
     const threadId = basename(filePath, ".jsonl");
     const prev = this.sessions.get(threadId);
@@ -310,8 +351,9 @@ export class ClaudeCodeAgentWatcher implements AgentWatcher {
 
       this.sessions.set(threadId, {
         status: latestStatus, fileSize: size, threadName, projectDir,
-        toolUseSeenAt: lastEntryIsToolUse && latestStatus === "running" ? Date.now() : undefined,
-        lastGrowthAt: (latestStatus === "running" || latestStatus === "waiting") ? Date.now() : undefined,
+        toolUseSeenAt: lastEntryIsToolUse && latestStatus === "running" ? mtimeMs : undefined,
+        lastGrowthAt: (latestStatus === "running" || latestStatus === "waiting") ? mtimeMs : undefined,
+        lastMtimeMs: mtimeMs,
       });
       return;
     }
@@ -361,6 +403,13 @@ export class ClaudeCodeAgentWatcher implements AgentWatcher {
     if (this.scanning || !this.ctx) return;
     this.scanning = true;
 
+    const p = this.scanInternal();
+    this.scanPromise = p;
+    await p;
+    this.scanPromise = null;
+  }
+
+  private async scanInternal(): Promise<void> {
     try {
       let dirs: string[];
       try { dirs = await readdir(this.projectsDir); } catch { return; }
@@ -387,7 +436,6 @@ export class ClaudeCodeAgentWatcher implements AgentWatcher {
     } finally {
       if (!this.seeded) {
         this.seeded = true;
-        // Emit seeded sessions with non-idle status (like amp watcher does)
         for (const [threadId, state] of this.sessions) {
           if (state.status === "idle" || !state.projectDir) continue;
           const session = this.ctx?.resolveSession(state.projectDir);
@@ -396,7 +444,7 @@ export class ClaudeCodeAgentWatcher implements AgentWatcher {
             agent: "claude-code",
             session,
             status: state.status,
-            ts: Date.now(),
+            ts: state.lastMtimeMs ?? Date.now(),
             threadId,
             threadName: state.threadName,
           });

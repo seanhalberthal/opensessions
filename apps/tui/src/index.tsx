@@ -231,6 +231,15 @@ function App() {
   const [killTarget, setKillTarget] = createSignal<string | null>(null);
   let themeBeforePreview: Theme | null = null;
 
+  // --- Flash message (brief feedback after actions like refresh) ---
+  const [flashMessage, setFlashMessage] = createSignal<string | null>(null);
+  let flashTimer: ReturnType<typeof setTimeout> | null = null;
+  function flash(msg: string, ms = 1200) {
+    if (flashTimer) clearTimeout(flashTimer);
+    setFlashMessage(msg);
+    flashTimer = setTimeout(() => setFlashMessage(null), ms);
+  }
+
   const [clientTty, setClientTty] = createSignal(getClientTty());
   let ws: WebSocket | null = null;
   let startupFocusSynced = false;
@@ -709,6 +718,7 @@ function App() {
       }
       case "r":
         send({ type: "refresh" });
+        flash("refreshed");
         break;
       case "t":
         themeBeforePreview = theme();
@@ -776,6 +786,7 @@ function App() {
           <span style={{ fg: P().subtext0, attributes: BOLD }}>Sessions</span>
           <span style={{ fg: P().overlay0 }}>{" "}{String(sessions.length)}</span>
           {runningCount() > 0 ? <span style={{ fg: P().yellow }}>{" "}{"⚡"}{runningCount()}</span> : ""}
+          <Show when={flashMessage()}><span style={{ fg: P().overlay0, attributes: DIM }}>{" "}{flashMessage()}</span></Show>
           {errorCount() > 0 ? <span style={{ fg: P().red }}>{" "}{"✗"}{errorCount()}</span> : ""}
           {unseenCount() > 0 ? <span style={{ fg: P().teal }}>{" "}{"●"}{" "}{unseenCount()}</span> : ""}
         </text>
@@ -1316,7 +1327,8 @@ function AgentListItem(props: AgentListItemProps) {
   const [isDismissHover, setIsDismissHover] = createSignal(false);
   const [isFlash, setIsFlash] = createSignal(false);
 
-  const isTerminal = () => TERMINAL_STATUSES.has(props.agent.status);
+  const isTerminal = () =>
+    TERMINAL_STATUSES.has(props.agent.status) && props.agent.liveness !== "alive";
   const isUnseen = () => isTerminal() && props.agent.unseen === true;
 
   const icon = () => {
@@ -1341,9 +1353,12 @@ function AgentListItem(props: AgentListItemProps) {
   const statusText = () => {
     if (props.agent.status === "tool-running") return "tools";
     if (props.agent.status === "running") return "running";
+    // Alive + done = idle at prompt, not finished
+    if (props.agent.status === "done" && props.agent.liveness === "alive") return "idle";
     if (props.agent.status === "done") return "done";
     if (props.agent.status === "error") return "error";
     if (props.agent.status === "stale") return "stale";
+    if (props.agent.status === "interrupted" && props.agent.liveness === "alive") return "idle";
     if (props.agent.status === "interrupted") return "stopped";
     if (props.agent.status === "waiting") return "waiting";
     return "";
@@ -1545,13 +1560,14 @@ function SessionCard(props: SessionCardProps) {
 
         {/* Content */}
         <box flexDirection="column" flexGrow={1} paddingRight={1}>
-          {/* Row 1: name + status */}
+          {/* Row 1: name + status icons (right) */}
           <box flexDirection="row">
             <text truncate flexGrow={1}>
               <span style={{ fg: nameColor(), attributes: props.isFocused || props.isCurrent ? BOLD : undefined }}>
                 {truncName()}
               </span>
             </text>
+            <box flexGrow={1} />
             <Show when={statusIcon()}>
               <text flexShrink={0}>
                 <span style={{ fg: statusColor() }}>{" "}{statusIcon()}</span>

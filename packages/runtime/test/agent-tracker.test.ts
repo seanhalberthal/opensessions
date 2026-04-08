@@ -236,4 +236,175 @@ describe("AgentTracker", () => {
 
     expect(tracker.getState("sess-1")).not.toBeNull();
   });
+
+  // --- applyPanePresence ---
+
+  describe("applyPanePresence", () => {
+    test("enriches existing watcher entry with paneId and liveness", () => {
+      tracker.applyEvent(event({ session: "sess-1", agent: "claude-code", threadId: "abc", status: "running" }));
+
+      const changed = tracker.applyPanePresence("sess-1", [
+        { agent: "claude-code", paneId: "%1" },
+      ]);
+
+      expect(changed).toBe(true);
+      const agents = tracker.getAgents("sess-1");
+      expect(agents.length).toBe(1);
+      expect(agents[0]!.paneId).toBe("%1");
+      expect(agents[0]!.liveness).toBe("alive");
+      // Watcher status preserved — scanner doesn't touch it
+      expect(agents[0]!.status).toBe("running");
+    });
+
+    test("creates minimal synthetic entry for unmatched pane agent", () => {
+      const changed = tracker.applyPanePresence("sess-1", [
+        { agent: "claude-code", paneId: "%5" },
+      ]);
+
+      expect(changed).toBe(true);
+      const agents = tracker.getAgents("sess-1");
+      expect(agents.length).toBe(1);
+      expect(agents[0]!.agent).toBe("claude-code");
+      expect(agents[0]!.paneId).toBe("%5");
+      expect(agents[0]!.liveness).toBe("alive");
+      expect(agents[0]!.status).toBe("idle"); // default for synthetics
+      expect(agents[0]!.threadId).toBeUndefined(); // scanner doesn't resolve threadId
+    });
+
+    test("transitions previously-alive agent to exited when missing from scan", () => {
+      // First: apply presence to make it alive
+      tracker.applyPanePresence("sess-1", [
+        { agent: "claude-code", paneId: "%1" },
+      ]);
+
+      // Verify it's alive
+      let agents = tracker.getAgents("sess-1");
+      expect(agents[0]!.liveness).toBe("alive");
+
+      // Second: empty scan — agent disappeared
+      const changed = tracker.applyPanePresence("sess-1", []);
+
+      expect(changed).toBe(true);
+      agents = tracker.getAgents("sess-1");
+      expect(agents.length).toBe(1);
+      expect(agents[0]!.liveness).toBe("exited");
+      expect(agents[0]!.paneId).toBeUndefined();
+    });
+
+    test("does not transition unknown-liveness agents to exited", () => {
+      // Watcher-only entry (no pane info)
+      tracker.applyEvent(event({ session: "sess-1", agent: "claude-code", threadId: "abc", status: "running" }));
+
+      // Empty pane scan — should NOT affect watcher-only entries
+      const changed = tracker.applyPanePresence("sess-1", []);
+
+      expect(changed).toBe(false);
+      const agents = tracker.getAgents("sess-1");
+      expect(agents[0]!.liveness).toBeUndefined(); // still unknown
+    });
+
+    test("pruneStuck skips alive agents", () => {
+      const oldTs = Date.now() - 10 * 60 * 1000;
+      tracker.applyEvent(event({ session: "sess-1", agent: "claude-code", threadId: "abc", status: "running", ts: oldTs }));
+
+      // Make it alive via pane presence
+      tracker.applyPanePresence("sess-1", [
+        { agent: "claude-code", paneId: "%1" },
+      ]);
+
+      // Prune with a timeout that would normally remove it
+      tracker.pruneStuck(3 * 60 * 1000);
+
+      // Should survive because it's alive
+      expect(tracker.getAgents("sess-1").length).toBe(1);
+    });
+
+    test("pruneStuck removes exited agents", () => {
+      const oldTs = Date.now() - 10 * 60 * 1000;
+      tracker.applyEvent(event({ session: "sess-1", agent: "claude-code", threadId: "abc", status: "running", ts: oldTs }));
+
+      // Make alive then exited
+      tracker.applyPanePresence("sess-1", [{ agent: "claude-code", paneId: "%1" }]);
+      tracker.applyPanePresence("sess-1", []); // exits
+
+      tracker.pruneStuck(3 * 60 * 1000);
+
+      expect(tracker.getState("sess-1")).toBeNull();
+    });
+
+    test("pruneTerminal skips alive agents even with terminal status", () => {
+      const oldTs = Date.now() - 6 * 60 * 1000;
+      tracker.applyEvent(event({ session: "sess-1", agent: "claude-code", threadId: "abc", status: "done", ts: oldTs }));
+      tracker.markSeen("sess-1"); // Mark seen so prune would normally remove
+
+      // Make it alive
+      tracker.applyPanePresence("sess-1", [{ agent: "claude-code", paneId: "%1" }]);
+
+      tracker.pruneTerminal();
+
+      // Should survive because alive
+      expect(tracker.getAgents("sess-1").length).toBe(1);
+    });
+
+    test("returns false when nothing changed", () => {
+      tracker.applyPanePresence("sess-1", [
+        { agent: "claude-code", paneId: "%1" },
+      ]);
+
+      // Apply same presence again
+      const changed = tracker.applyPanePresence("sess-1", [
+        { agent: "claude-code", paneId: "%1" },
+      ]);
+
+      expect(changed).toBe(false);
+    });
+
+    test("enriches watcher entry matched by agent name", () => {
+      tracker.applyEvent(event({ session: "sess-1", agent: "amp", status: "running" }));
+
+      const changed = tracker.applyPanePresence("sess-1", [
+        { agent: "amp", paneId: "%3" },
+      ]);
+
+      // Should not create a duplicate — enriches the existing entry
+      expect(changed).toBe(true);
+      expect(tracker.getAgents("sess-1").length).toBe(1);
+      expect(tracker.getAgents("sess-1")[0]!.paneId).toBe("%3");
+      expect(tracker.getAgents("sess-1")[0]!.liveness).toBe("alive");
+    });
+
+    test("prefers watcher entry over synthetic when enriching", () => {
+      // Watcher tracks the current conversation
+      tracker.applyEvent(event({ session: "sess-1", agent: "claude-code", threadId: "current-convo", status: "running" }));
+
+      // Scanner just reports agent + paneId (no threadId)
+      const changed = tracker.applyPanePresence("sess-1", [
+        { agent: "claude-code", paneId: "%21" },
+      ]);
+
+      expect(changed).toBe(true);
+      const agents = tracker.getAgents("sess-1");
+      expect(agents.length).toBe(1);
+      expect(agents[0]!.threadId).toBe("current-convo"); // watcher's threadId preserved
+      expect(agents[0]!.paneId).toBe("%21");
+      expect(agents[0]!.liveness).toBe("alive");
+    });
+
+    test("cleans up synthetic entry when watcher creates entry for same agent", () => {
+      // Scanner detects agent before watcher → creates synthetic
+      tracker.applyPanePresence("sess-1", [
+        { agent: "claude-code", paneId: "%21" },
+      ]);
+      expect(tracker.getAgents("sess-1").length).toBe(1);
+      expect(tracker.getAgents("sess-1")[0]!.paneId).toBe("%21");
+
+      // Watcher catches up → creates entry with threadId, auto-cleans synthetic
+      tracker.applyEvent(event({ session: "sess-1", agent: "claude-code", threadId: "abc", status: "running" }));
+      const agents = tracker.getAgents("sess-1");
+      expect(agents.length).toBe(1);
+      expect(agents[0]!.threadId).toBe("abc");
+      expect(agents[0]!.paneId).toBe("%21");
+      expect(agents[0]!.liveness).toBe("alive");
+    });
+  });
 });

@@ -1,4 +1,4 @@
-import type { AgentEvent } from "../contracts/agent";
+import type { AgentEvent, PanePresenceInput } from "../contracts/agent";
 import { TERMINAL_STATUSES } from "../contracts/agent";
 
 const MAX_EVENT_TIMESTAMPS = 30;
@@ -26,8 +26,6 @@ export class AgentTracker {
   // Per-instance unseen tracking: "session\0instanceKey"
   private unseenInstances = new Set<string>();
   private active = new Set<string>();
-  // Pinned instances: agents backed by a live pane process — exempt from pruning
-  private pinnedKeys = new Map<string, Set<string>>(); // session → Set<instanceKey>
 
   private unseenKey(session: string, key: string): string {
     return `${session}\0${key}`;
@@ -42,7 +40,27 @@ export class AgentTracker {
       sessionInstances = new Map();
       this.instances.set(event.session, sessionInstances);
     }
+    // Preserve pane info from prior enrichment by applyPanePresence
+    const prev = sessionInstances.get(key);
+    if (prev?.paneId) {
+      event.paneId = event.paneId ?? prev.paneId;
+      event.liveness = event.liveness ?? prev.liveness;
+    }
     sessionInstances.set(key, event);
+
+    // Clean up any synthetic pane-keyed entries for this agent
+    // (pane scanner may have created a minimal synthetic before the watcher seeded)
+    for (const [k, ev] of sessionInstances) {
+      if (k !== key && ev.agent === event.agent && k.includes(":pane:")) {
+        // Transfer pane info from the synthetic to the watcher entry
+        if (ev.paneId && !event.paneId) {
+          event.paneId = ev.paneId;
+          event.liveness = ev.liveness;
+        }
+        sessionInstances.delete(k);
+        this.unseenInstances.delete(this.unseenKey(event.session, k));
+      }
+    }
 
     // Track event timestamps
     let timestamps = this.eventTimestamps.get(event.session);
@@ -138,7 +156,7 @@ export class AgentTracker {
     for (const [session, sessionInstances] of this.instances) {
       for (const [key, event] of sessionInstances) {
         if ((event.status === "running" || event.status === "tool-running") && now - event.ts > timeoutMs) {
-          if (this.isPinned(session, key)) continue;
+          if (event.liveness === "alive") continue;
           sessionInstances.delete(key);
           this.unseenInstances.delete(this.unseenKey(session, key));
         }
@@ -149,7 +167,7 @@ export class AgentTracker {
     }
   }
 
-  /** Auto-prune terminal instances older than timeout, but only if instance is not unseen or pinned */
+  /** Auto-prune terminal instances older than timeout, but only if instance is not unseen or alive */
   pruneTerminal(): void {
     const now = Date.now();
     for (const [session, sessionInstances] of this.instances) {
@@ -157,7 +175,7 @@ export class AgentTracker {
         if (!TERMINAL_STATUSES.has(event.status)) continue;
         const ukey = this.unseenKey(session, key);
         if (this.unseenInstances.has(ukey)) continue; // Don't prune unseen — user hasn't looked yet
-        if (this.isPinned(session, key)) continue; // Don't prune agents backed by live panes
+        if (event.liveness === "alive") continue; // Don't prune agents backed by live panes
         if (now - event.ts > TERMINAL_PRUNE_MS) {
           sessionInstances.delete(key);
         }
@@ -210,26 +228,80 @@ export class AgentTracker {
     for (const s of sessions) this.active.add(s);
   }
 
-  /** Update the set of pinned instance keys for a session (live pane-backed agents). */
-  setPinnedInstances(session: string | null, keys: string[]): void {
-    this.pinnedKeys.clear();
-    if (session && keys.length > 0) {
-      this.pinnedKeys.set(session, new Set(keys));
-    }
-  }
+  /** Fold pane scanner results into the tracker.
+   *  The scanner only reports {agent, paneId} — no threadId, status, or threadName.
+   *  Watchers are the single source of truth for those fields.
+   *
+   *  1. Entries with liveness "alive" whose paneId is missing from the scan → "exited"
+   *  2. Each pane agent: find existing entry for this agent → stamp paneId + liveness.
+   *     If none exists, create a minimal synthetic (status: "idle", liveness: "alive").
+   *  Returns true if anything changed (caller uses this for broadcast decisions). */
+  applyPanePresence(session: string, paneAgents: PanePresenceInput[]): boolean {
+    let changed = false;
+    let sessionInstances = this.instances.get(session);
 
-  /** Update pinned instance keys for multiple sessions at once. */
-  setPinnedInstancesMulti(keysBySession: Map<string, string[]>): void {
-    this.pinnedKeys.clear();
-    for (const [session, keys] of keysBySession) {
-      if (keys.length > 0) {
-        this.pinnedKeys.set(session, new Set(keys));
+    // Index incoming pane IDs for fast lookup
+    const activePaneIds = new Set<string>();
+    for (const pa of paneAgents) activePaneIds.add(pa.paneId);
+
+    // 1. Transition previously-alive entries whose pane disappeared → "exited"
+    if (sessionInstances) {
+      for (const [, event] of sessionInstances) {
+        if (event.liveness === "alive" && event.paneId && !activePaneIds.has(event.paneId)) {
+          event.liveness = "exited";
+          event.paneId = undefined;
+          changed = true;
+        }
       }
     }
-  }
 
-  /** Check if an instance is pinned (backed by a live pane process). */
-  isPinned(session: string, key: string): boolean {
-    return this.pinnedKeys.get(session)?.has(key) ?? false;
+    // 2. Stamp pane info onto existing entries, or create minimal synthetics
+    for (const pa of paneAgents) {
+      if (!sessionInstances) {
+        sessionInstances = new Map();
+        this.instances.set(session, sessionInstances);
+      }
+
+      // Find an existing entry for this agent (prefer watcher-sourced over synthetic)
+      let bestEvent: AgentEvent | undefined;
+      for (const [k, ev] of sessionInstances) {
+        if (ev.agent !== pa.agent) continue;
+        if (!bestEvent || !k.includes(":pane:")) {
+          bestEvent = ev;
+          // If this is a watcher-sourced entry (not pane-keyed), prefer it and stop
+          if (!k.includes(":pane:")) break;
+        }
+      }
+
+      if (bestEvent) {
+        const wasDifferent = bestEvent.paneId !== pa.paneId || bestEvent.liveness !== "alive";
+        bestEvent.paneId = pa.paneId;
+        bestEvent.liveness = "alive";
+        if (wasDifferent) changed = true;
+        continue;
+      }
+
+      // No existing entry — create minimal synthetic
+      const syntheticKey = `${pa.agent}:pane:${pa.paneId}`;
+      if (!sessionInstances.has(syntheticKey)) {
+        sessionInstances.set(syntheticKey, {
+          agent: pa.agent,
+          session,
+          status: "idle",
+          ts: Date.now(),
+          paneId: pa.paneId,
+          liveness: "alive",
+        });
+        changed = true;
+      } else {
+        const existing = sessionInstances.get(syntheticKey)!;
+        const wasDifferent = existing.paneId !== pa.paneId || existing.liveness !== "alive";
+        existing.paneId = pa.paneId;
+        existing.liveness = "alive";
+        if (wasDifferent) changed = true;
+      }
+    }
+
+    return changed;
   }
 }
