@@ -1501,29 +1501,24 @@ function SessionCard(props: SessionCardProps) {
     return P().surface2;
   };
 
-  const truncName = () => {
-    const n = props.session.name;
-    return n.length > 18 ? n.slice(0, 17) + "…" : n;
-  };
+  const truncName = () => props.session.name;
 
-  const truncBranch = () => {
-    const b = props.session.branch;
-    if (!b) return "";
-    return b.length > 15 ? b.slice(0, 14) + "…" : b;
-  };
+  const truncBranch = () => props.session.branch ?? "";
 
-  const repoName = () => {
+  const dirName = () => {
     const d = props.session.dir;
     if (!d) return "";
     const parts = d.replace(/\/+$/, "").split("/");
-    return parts[parts.length - 1] || "";
+    const name = parts[parts.length - 1] || "";
+    if (name === props.session.name) return "";
+    return name;
   };
 
   const portHint = () => {
     const ports = props.session.ports ?? [];
     if (ports.length === 0) return "";
-    if (ports.length === 1) return `⌁${ports[0]}`;
-    return `⌁${ports[0]}+${ports.length - 1}`;
+    if (ports.length === 1) return `  ⌁${ports[0]}`;
+    return `  ⌁${ports[0]}+${ports.length - 1}`;
   };
 
   const metaSummary = () => {
@@ -1566,10 +1561,10 @@ function SessionCard(props: SessionCardProps) {
         </box>
 
         {/* Content */}
-        <box flexDirection="column" flexGrow={1} paddingRight={1}>
+        <box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden" paddingRight={1}>
           {/* Row 1: name + status icons (right) */}
           <box flexDirection="row">
-            <text truncate flexGrow={1}>
+            <text truncate wrapMode="none" flexGrow={1} fg={nameColor()}>
               <span style={{ fg: nameColor(), attributes: props.isFocused || props.isCurrent ? BOLD : undefined }}>
                 {truncName()}
               </span>
@@ -1582,35 +1577,32 @@ function SessionCard(props: SessionCardProps) {
             </Show>
           </box>
 
-          {/* Row 2: branch plus a compact local-port hint when available */}
+          {/* Row 2: repo/dir name (click to open in Finder when focused) */}
+          <Show when={dirName()}>
+            <text truncate wrapMode="none" fg={props.isFocused ? P().teal : P().overlay1}
+              onMouseDown={() => {
+                if (!props.isFocused) return;
+                const d = props.session.dir;
+                if (d) Bun.spawnSync(["open", d]);
+              }}>
+              <span style={{ fg: props.isFocused ? P().teal : P().overlay1 }}>
+                {dirName()}
+              </span>
+            </text>
+          </Show>
+
+          {/* Row 3: branch + port hint */}
           <Show when={props.session.branch || portHint()}>
-            <box flexDirection="row">
-              <Show when={props.session.branch || repoName()}>
-                <text truncate flexGrow={1}>
-                  <Show when={repoName()}>
-                    <span style={{ fg: props.isFocused ? P().teal : P().overlay0 }}>
-                      {repoName()}
-                    </span>
-                  </Show>
-                  <Show when={repoName() && props.session.branch}>
-                    <span style={{ fg: P().overlay0 }}>{" · "}</span>
-                  </Show>
-                  <Show when={props.session.branch}>
-                    <span style={{ fg: props.isFocused ? P().pink : P().overlay0 }}>
-                      {truncBranch()}
-                    </span>
-                  </Show>
-                </text>
-              </Show>
+            <text truncate wrapMode="none" fg={props.isFocused ? P().pink : P().overlay0}>
+              <span style={{ fg: props.isFocused ? P().pink : P().overlay0 }}>
+                {truncBranch()}
+              </span>
               <Show when={portHint()}>
-                <text flexShrink={0}>
-                  <span style={{ fg: props.isFocused ? P().sky : P().overlay0 }}>
-                    {props.session.branch ? " " : ""}
-                    {portHint()}
-                  </span>
-                </text>
+                <span style={{ fg: props.isFocused ? P().sky : P().overlay0 }}>
+                  {portHint()}
+                </span>
               </Show>
-            </box>
+            </text>
           </Show>
 
           {/* Row 3: metadata summary (status + progress) */}
