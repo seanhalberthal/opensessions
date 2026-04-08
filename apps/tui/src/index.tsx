@@ -1535,22 +1535,6 @@ function SessionCard(props: SessionCardProps) {
     return parts.join(" · ");
   };
 
-  const agentCount = () =>
-    props.session.agents?.filter((a) =>
-      a.liveness === "alive" || !["done", "error", "interrupted"].includes(a.status),
-    ).length ?? 0;
-
-  const agentBadge = () => {
-    const n = agentCount();
-    if (n === 0) return "";
-    return n === 1 ? "●" : `●${n}`;
-  };
-
-  const agentBadgeColor = () => {
-    if (props.isFocused) return P().subtext0;
-    return P().overlay0;
-  };
-
   const metaTone = () => props.session.metadata?.status?.tone;
 
   const bgColor = () => {
@@ -1576,15 +1560,12 @@ function SessionCard(props: SessionCardProps) {
 
         {/* Content */}
         <box flexDirection="column" flexGrow={1} paddingRight={1}>
-          {/* Row 1: name + agent badge (left) + status icons (right) */}
+          {/* Row 1: name + status icons (right) */}
           <box flexDirection="row">
-            <text truncate>
+            <text truncate flexGrow={1}>
               <span style={{ fg: nameColor(), attributes: props.isFocused || props.isCurrent ? BOLD : undefined }}>
                 {truncName()}
               </span>
-              <Show when={agentBadge()}>
-                <span style={{ fg: agentBadgeColor() }}>{" "}{agentBadge()}</span>
-              </Show>
             </text>
             <box flexGrow={1} />
             <Show when={statusIcon()}>
