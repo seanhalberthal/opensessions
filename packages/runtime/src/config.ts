@@ -3,6 +3,9 @@ import { join } from "path";
 
 import type { PartialTheme } from "./themes";
 
+/** Session filter mode for the TUI sidebar */
+export type SessionFilterMode = "all" | "active" | "running";
+
 export interface OpensessionsConfig {
   /** Explicit mux provider name (overrides auto-detect) */
   mux?: string;
@@ -20,6 +23,8 @@ export interface OpensessionsConfig {
   keybinding?: string;
   /** Persisted detail panel heights keyed by mux session name */
   detailPanelHeights?: Record<string, number>;
+  /** Default session filter: "all" (default), "active" (any agent), "running" (running agents only) */
+  sessionFilter?: SessionFilterMode;
 }
 
 const DEFAULTS: OpensessionsConfig = {

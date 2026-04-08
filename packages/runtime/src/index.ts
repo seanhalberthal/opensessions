@@ -31,7 +31,7 @@ export { detectMux } from "./mux/detect";
 export { PluginLoader } from "./plugins/loader";
 export type { PluginAPI, PluginFactory } from "./plugins/loader";
 export { loadConfig, saveConfig } from "./config";
-export type { OpensessionsConfig } from "./config";
+export type { OpensessionsConfig, SessionFilterMode } from "./config";
 export { resolveTheme, BUILTIN_THEMES, DEFAULT_THEME } from "./themes";
 export type { Theme, ThemePalette, PartialTheme } from "./themes";
 export { startServer } from "./server/index";

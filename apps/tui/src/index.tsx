@@ -12,6 +12,7 @@ import {
   type ClientCommand,
   type Theme,
   type MetadataTone,
+  type SessionFilterMode,
   TERMINAL_STATUSES,
   SERVER_PORT,
   SERVER_HOST,
@@ -61,6 +62,13 @@ const TONE_ICONS: Record<MetadataTone, string> = {
   success: "✓",
   warn: "⚠",
   error: "✗",
+};
+
+const FILTER_CYCLE: SessionFilterMode[] = ["all", "active", "running"];
+const FILTER_LABELS: Record<SessionFilterMode, string> = {
+  all: "all",
+  active: "agents",
+  running: "running",
 };
 
 function toneColor(tone: MetadataTone | undefined, palette: ReturnType<() => Theme["palette"]>): string {
@@ -221,6 +229,36 @@ function App() {
   const [isDetailResizing, setIsDetailResizing] = createSignal(false);
   const detailPanelSessionName = createMemo(() => focusedSession() ?? mySession());
 
+  // --- Session filter ---
+  const [sessionFilter, setSessionFilter] = createSignal<SessionFilterMode>(
+    loadConfig().sessionFilter ?? "all",
+  );
+
+  const filteredSessions = createMemo(() => {
+    const mode = sessionFilter();
+    if (mode === "all") return sessions;
+    return sessions.filter((s) => {
+      if (mode === "active") return s.agents.length > 0 || s.agentState !== null;
+      // "running" — only sessions where an agent is currently running
+      const st = s.agentState?.status;
+      return st === "running" || st === "tool-running" || st === "waiting";
+    });
+  });
+
+  function cycleSessionFilter() {
+    const idx = FILTER_CYCLE.indexOf(sessionFilter());
+    const next = FILTER_CYCLE[(idx + 1) % FILTER_CYCLE.length]!;
+    setSessionFilter(next);
+    saveConfig({ sessionFilter: next });
+    flash(`filter: ${FILTER_LABELS[next]}`);
+    // If the focused session is no longer visible, refocus
+    const list = filteredSessions();
+    if (list.length > 0 && !list.some((s) => s.name === focusedSession())) {
+      setFocusedSession(list[0]!.name);
+      send({ type: "focus-session", name: list[0]!.name });
+    }
+  }
+
   // --- Panel focus: sessions list vs agent detail ---
   type PanelFocus = "sessions" | "agents";
   const [panelFocus, setPanelFocus] = createSignal<PanelFocus>("sessions");
@@ -278,7 +316,7 @@ function App() {
   }
 
   function moveLocalFocus(delta: -1 | 1) {
-    const list = sessions;
+    const list = filteredSessions();
     if (list.length === 0) return;
 
     const current = focusedSession();
@@ -708,7 +746,7 @@ function App() {
         break;
       }
       case "tab": {
-        const list = sessions;
+        const list = filteredSessions();
         if (list.length === 0) break;
         const cur = currentSession();
         const idx = list.findIndex((s) => s.name === cur);
@@ -726,6 +764,9 @@ function App() {
         break;
       case "u":
         send({ type: "show-all-sessions" });
+        break;
+      case "f":
+        cycleSessionFilter();
         break;
       case "d": {
         if (panelFocus() === "agents") {
@@ -755,7 +796,7 @@ function App() {
       default: {
         if (key.number) {
           const idx = parseInt(key.name, 10) - 1;
-          const target = sessions[idx];
+          const target = filteredSessions()[idx];
           if (target) switchToSession(target.name);
         }
         break;
@@ -784,7 +825,10 @@ function App() {
         <text>
           <span style={{ fg: P().overlay1 }}>{"  "}</span>
           <span style={{ fg: P().subtext0, attributes: BOLD }}>Sessions</span>
-          <span style={{ fg: P().overlay0 }}>{" "}{String(sessions.length)}</span>
+          <span style={{ fg: P().overlay0 }}>{" "}{String(filteredSessions().length)}{sessionFilter() !== "all" ? `/${sessions.length}` : ""}</span>
+          <Show when={sessionFilter() !== "all"}>
+            <span style={{ fg: P().lavender, attributes: DIM }}>{" "}{"⏻ "}{FILTER_LABELS[sessionFilter()]}</span>
+          </Show>
           {runningCount() > 0 ? <span style={{ fg: P().yellow }}>{" "}{"⚡"}{runningCount()}</span> : ""}
           <Show when={flashMessage()}><span style={{ fg: P().overlay0, attributes: DIM }}>{" "}{flashMessage()}</span></Show>
           {errorCount() > 0 ? <span style={{ fg: P().red }}>{" "}{"✗"}{errorCount()}</span> : ""}
@@ -794,7 +838,7 @@ function App() {
 
       {/* Session list */}
       <scrollbox flexGrow={1} flexShrink={1} paddingTop={1}>
-        <For each={sessions}>
+        <For each={filteredSessions()}>
           {(session, i) => (
             <SessionCard
               session={session}
@@ -920,6 +964,8 @@ function App() {
             <span style={{ fg: P().overlay1 }}>{" go  "}</span>
             <span style={{ fg: P().overlay0 }}>{"→"}</span>
             <span style={{ fg: P().overlay1 }}>{" agents  "}</span>
+            <span style={{ fg: P().overlay0 }}>{"f"}</span>
+            <span style={{ fg: P().overlay1 }}>{" filter  "}</span>
             <span style={{ fg: P().overlay0 }}>{"d"}</span>
             <span style={{ fg: P().overlay1 }}>{" hide  "}</span>
             <span style={{ fg: P().overlay0 }}>{"x"}</span>
